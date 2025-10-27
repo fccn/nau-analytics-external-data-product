@@ -1,0 +1,73 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CONTAINER_REGISTRY_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        container_registry_repository: [custom-spark-image]  # change this to your image name(s)
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker meta
+        id: meta_platform
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.CONTAINER_REGISTRY_USER }}/${{ matrix.container_registry_repository }}
+          tags: |
+            type=schedule
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha
+
+      - name: Build Docker image (no push yet)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./Docker
+          load: true
+          tags: ${{ steps.meta_platform.outputs.tags }}
+          labels: ${{ steps.meta_platform.outputs.labels }}
+
+      - name: Login to DockerHub
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Docker push with tag like branch name and sha git digest
+        if: ${{ github.event_name != 'pull_request' }}
+        run: |
+          set -x
+          tags="${{ steps.meta_platform.outputs.tags }}"
+          for tag in $tags; do
+            docker image push $tag
+          done
+          echo "✅ Explore on https://hub.docker.com/r/${{ env.CONTAINER_REGISTRY_USER }}/${{ matrix.container_registry_repository }}/tags"
+
+      - name: Docker push latest image if branch is main
+        if: ${{ github.ref_name == 'main' && github.event_name != 'pull_request' }}
+        run: |
+          docker image tag ${{ env.CONTAINER_REGISTRY_USER }}/${{ matrix.container_registry_repository }}:$(echo $GITHUB_SHA | head -c7) \
+            docker.io/${{ env.CONTAINER_REGISTRY_USER }}/${{ matrix.container_registry_repository }}:latest
+          docker image push docker.io/${{ env.CONTAINER_REGISTRY_USER }}/${{ matrix.container_registry_repository }}:latest
+          echo "Updated latest on https://hub.docker.com/r/${{ env.CONTAINER_REGISTRY_USER }}/${{ matrix.container_registry_repository }}/tags"
