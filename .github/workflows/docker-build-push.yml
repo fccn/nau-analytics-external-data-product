@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        container_registry_repository: [custom-spark-image]  # change this to your image name(s)
+        container_registry_repository: [nau-analytics-external-data-product] 
 
     steps:
       - name: Checkout repository
