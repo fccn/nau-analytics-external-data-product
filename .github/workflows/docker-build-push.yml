@@ -38,6 +38,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
             type=sha
+            type=ref,event=tag
 
       - name: Build Docker image (no push yet)
         uses: docker/build-push-action@v6
