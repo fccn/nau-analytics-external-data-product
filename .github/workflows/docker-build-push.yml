@@ -13,9 +13,6 @@ env:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        container_registry_repository: [custom-spark-image]  # change this to your image name(s)
 
     steps:
       - name: Checkout repository
@@ -29,7 +26,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            ${{ env.CONTAINER_REGISTRY_USER }}/${{ matrix.container_registry_repository }}
+            nauedu/nau-analytics-external-data-product
           tags: |
             type=schedule
             type=ref,event=branch
