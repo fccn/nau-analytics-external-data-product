@@ -39,7 +39,8 @@ jobs:
       - name: Build Docker image (no push yet)
         uses: docker/build-push-action@v6
         with:
-          context: ./Docker
+          context: ./
+          file: /.Docker/Dockerfile
           load: true
           tags: ${{ steps.meta_platform.outputs.tags }}
           labels: ${{ steps.meta_platform.outputs.labels }}
