@@ -48,20 +48,27 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Docker push with tag like branch name and sha git digest
+      - name: Docker push with branch name tag
         if: ${{ github.event_name != 'pull_request' }}
         run: |
           set -x
-          tags="${{ steps.meta_platform.outputs.tags }}"
-          for tag in $tags; do
-            docker image push $tag
-          done
-          echo "✅ Explore on https://hub.docker.com/r/nauedu/nau-analytics-external-data-product/tags"
+          IMAGE_NAME="nauedu/nau-analytics-external-data-product"
+          BRANCH_TAG="${GITHUB_REF_NAME}"
+      
+          # Tag the image with the branch name
+          docker tag $IMAGE_NAME:latest $IMAGE_NAME:$BRANCH_TAG
+          docker push $IMAGE_NAME:$BRANCH_TAG
+      
+          echo "✅ Pushed branch tag '$BRANCH_TAG' on https://hub.docker.com/r/$IMAGE_NAME/tags"
 
-      - name: Docker push latest image if branch is main
+      - name: Docker push SHA tag if branch is main
         if: ${{ github.ref_name == 'main' && github.event_name != 'pull_request' }}
         run: |
-          docker image tag nauedu/nau-analytics-external-data-product:$(echo $GITHUB_SHA | head -c7) \
-            docker.io/nauedu/nau-analytics-external-data-product:latest
-          docker image push docker.io/nauedu/nau-analytics-external-data-product:latest
-          echo "Updated latest on https://hub.docker.com/r/nauedu/nau-analytics-external-data-product/tags"
+          set -x
+          IMAGE_NAME="nauedu/nau-analytics-external-data-product"
+          SHA_TAG=$(echo $GITHUB_SHA | head -c7)
+
+          docker tag $IMAGE_NAME:$SHA_TAG $IMAGE_NAME:$SHA_TAG
+          docker push $IMAGE_NAME:$SHA_TAG
+
+          echo "✅ Pushed SHA tag $SHA_TAG for main branch on https://hub.docker.com/r/$IMAGE_NAME/tags"
