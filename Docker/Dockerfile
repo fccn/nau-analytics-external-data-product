@@ -86,35 +86,41 @@ RUN wget https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoo
     wget https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.3.0/mysql-connector-j-8.3.0.jar
 
 ###########################################
-# Stage 4: Final runtime image for K8s
+# Stage 4: Final runtime image for K8s + Jupyter
 ###########################################
 FROM spark-base AS final
 
-# Set environment variables for PySpark
+# Set environment variables for PySpark + Jupyter
 ENV PYSPARK_PYTHON=/usr/local/bin/python3.11
 ENV PYSPARK_DRIVER_PYTHON=/usr/local/bin/python3.11
-ENV PYTHONPATH=""
 ENV PYTHONPATH="${SPARK_HOME}/python:${SPARK_HOME}/python/lib/py4j-0.10.9.7-src.zip:${PYTHONPATH}"
+ENV JUPYTER_PORT=8888
+ENV JUPYTER_DIR=/opt/spark/work-dir/notebooks
 
-# Install matching PySpark version and dependencies
+# Install PySpark, JupyterLab and common Python libs
 RUN pip install --no-cache-dir \
     pyspark==3.5.6 \
     pandas \
-    numpy 
+    numpy \
+    jupyterlab==4.2.5
 
-# Create non-root user for running Spark (matches official image)
+# Create non-root user for running Spark/Jupyter
 RUN groupadd -r -g 185 spark && \
     useradd -r -u 185 -g 185 spark
 
-# Create directory for Spark logs & local storage
-RUN mkdir -p /opt/spark/work-dir && \
+# Prepare work directory
+RUN mkdir -p ${JUPYTER_DIR} && \
     chown -R spark:spark /opt/spark
 
-# Switch to non-root user
 USER 185
+WORKDIR ${JUPYTER_DIR}
 
-WORKDIR /opt/spark/work-dir
-RUN mkdir src
-COPY src/ ./src/
+# Copy code
+RUN mkdir -p /opt/spark/src
+COPY src/ /opt/spark/src/
 
-ENTRYPOINT ["/opt/entrypoint.sh"]
+# Expose Jupyter port
+EXPOSE 8888
+
+# Entrypoint — by default launches JupyterLab
+ENTRYPOINT ["bash", "-lc", "jupyter lab --ip=0.0.0.0 --port=${JUPYTER_PORT} --no-browser --ServerApp.token='' --ServerApp.password='' --allow-root --NotebookApp.notebook_dir=${JUPYTER_DIR}"]
