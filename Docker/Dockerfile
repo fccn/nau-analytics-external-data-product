@@ -88,9 +88,6 @@ RUN wget https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoo
 ###########################################
 # Stage 4: Final runtime image for K8s + Jupyter
 ###########################################
-###########################################
-# Stage 4: Final runtime image for K8s + Jupyter
-###########################################
 FROM spark-base AS final
 
 # Create non-root user WITH home directory
