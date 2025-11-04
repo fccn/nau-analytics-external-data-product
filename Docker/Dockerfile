@@ -88,6 +88,9 @@ RUN wget https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoo
 ###########################################
 # Stage 4: Final runtime image for K8s + Jupyter
 ###########################################
+###########################################
+# Stage 4: Final runtime image for K8s + Jupyter
+###########################################
 FROM spark-base AS final
 
 # Create non-root user WITH home directory
@@ -102,6 +105,13 @@ ENV HOME=/home/spark \
     PYSPARK_DRIVER_PYTHON=/usr/local/bin/python3.11 \
     PYTHONPATH="${SPARK_HOME}/python:${SPARK_HOME}/python/lib/py4j-0.10.9.7-src.zip:${PYTHONPATH}"
 
+# ✅ Install PySpark + JupyterLab + common libs
+RUN pip install --no-cache-dir \
+    pyspark==3.5.6 \
+    pandas \
+    numpy \
+    jupyterlab==4.2.5
+
 # Prepare directories Jupyter expects and fix ownership
 RUN mkdir -p ${JUPYTER_DIR} \
     && mkdir -p ${HOME}/.local/share/jupyter/runtime \
@@ -110,6 +120,9 @@ RUN mkdir -p ${JUPYTER_DIR} \
 
 USER 185
 WORKDIR ${JUPYTER_DIR}
+
+# Expose port for Jupyter
+EXPOSE 8888
 
 # EntryPoint: use ServerApp.root_dir (notebook_dir is deprecated)
 ENTRYPOINT ["bash","-lc","jupyter lab --ip=0.0.0.0 --port=${JUPYTER_PORT} --no-browser --ServerApp.root_dir=${JUPYTER_DIR} --ServerApp.token='' --ServerApp.password=''"]
