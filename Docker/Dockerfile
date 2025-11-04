@@ -90,37 +90,26 @@ RUN wget https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoo
 ###########################################
 FROM spark-base AS final
 
-# Set environment variables for PySpark + Jupyter
-ENV PYSPARK_PYTHON=/usr/local/bin/python3.11
-ENV PYSPARK_DRIVER_PYTHON=/usr/local/bin/python3.11
-ENV PYTHONPATH="${SPARK_HOME}/python:${SPARK_HOME}/python/lib/py4j-0.10.9.7-src.zip:${PYTHONPATH}"
-ENV JUPYTER_PORT=8888
-ENV JUPYTER_DIR=/opt/spark/work-dir/notebooks
-
-# Install PySpark, JupyterLab and common Python libs
-RUN pip install --no-cache-dir \
-    pyspark==3.5.6 \
-    pandas \
-    numpy \
-    jupyterlab==4.2.5
-
-# Create non-root user for running Spark/Jupyter
+# Create non-root user WITH home directory
 RUN groupadd -r -g 185 spark && \
-    useradd -r -u 185 -g 185 spark
+    useradd -m -r -u 185 -g 185 -d /home/spark spark
 
-# Prepare work directory
-RUN mkdir -p ${JUPYTER_DIR} && \
-    chown -R spark:spark /opt/spark
+# Set HOME and Jupyter runtime dir
+ENV HOME=/home/spark \
+    JUPYTER_PORT=8888 \
+    JUPYTER_DIR=/opt/spark/work-dir/notebooks \
+    PYSPARK_PYTHON=/usr/local/bin/python3.11 \
+    PYSPARK_DRIVER_PYTHON=/usr/local/bin/python3.11 \
+    PYTHONPATH="${SPARK_HOME}/python:${SPARK_HOME}/python/lib/py4j-0.10.9.7-src.zip:${PYTHONPATH}"
+
+# Prepare directories Jupyter expects and fix ownership
+RUN mkdir -p ${JUPYTER_DIR} \
+    && mkdir -p ${HOME}/.local/share/jupyter/runtime \
+    && mkdir -p ${HOME}/.jupyter \
+    && chown -R spark:spark /home/spark /opt/spark
 
 USER 185
 WORKDIR ${JUPYTER_DIR}
 
-# Copy code
-RUN mkdir -p /opt/spark/src
-COPY src/ /opt/spark/src/
-
-# Expose Jupyter port
-EXPOSE 8888
-
-# Entrypoint — by default launches JupyterLab
-ENTRYPOINT ["bash", "-lc", "jupyter lab --ip=0.0.0.0 --port=${JUPYTER_PORT} --no-browser --ServerApp.token='' --ServerApp.password='' --allow-root --NotebookApp.notebook_dir=${JUPYTER_DIR}"]
+# EntryPoint: use ServerApp.root_dir (notebook_dir is deprecated)
+ENTRYPOINT ["bash","-lc","jupyter lab --ip=0.0.0.0 --port=${JUPYTER_PORT} --no-browser --ServerApp.root_dir=${JUPYTER_DIR} --ServerApp.token='' --ServerApp.password=''"]
