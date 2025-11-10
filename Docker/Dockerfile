@@ -4,6 +4,7 @@
 # Stage 1: Build Python 3.11.6 from source
 ###########################################
 FROM ubuntu:22.04 AS python-build
+
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHON_VERSION=3.11.6
 ENV PREFIX=/usr/local
@@ -39,22 +40,22 @@ RUN ln -sf ${PREFIX}/bin/python3.11 /usr/local/bin/python \
 ###########################################
 # Stage 2: Get entrypoint from official Spark
 ###########################################
-FROM apache/spark:3.5.6 AS spark-official
+FROM apache/spark:3.5.7 AS spark-official
 
 ###########################################
 # Stage 3: Spark + Delta + Cloud connectors
 ###########################################
 FROM ubuntu:22.04 AS spark-base
 
-ARG SPARK_VERSION=3.5.6
+ARG SPARK_VERSION=3.5.7
 ARG HADOOP_VERSION=3
 ARG DELTA_VERSION=3.2.1
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV SPARK_HOME=/opt/spark
-ENV PATH="$SPARK_HOME/bin:$PATH"
+ENV PATH="${SPARK_HOME}/bin:${PATH}"
 
-# Install Java + basic utilities
+# Java + utils
 RUN apt-get update && apt-get install -y \
     openjdk-11-jdk \
     curl \
@@ -65,10 +66,10 @@ RUN apt-get update && apt-get install -y \
     procps \
  && rm -rf /var/lib/apt/lists/*
 
-# Copy compiled Python from builder
+# Copy Python from build stage
 COPY --from=python-build /usr/local /usr/local
 
-# Copy entrypoint script from official Spark image
+# Copy entrypoint scripts from official Spark image
 COPY --from=spark-official /opt/entrypoint.sh /opt/entrypoint.sh
 COPY --from=spark-official /opt/decom.sh /opt/decom.sh
 RUN chmod +x /opt/entrypoint.sh /opt/decom.sh
@@ -80,8 +81,8 @@ RUN wget https://dlcdn.apache.org/spark/spark-${SPARK_VERSION}/spark-${SPARK_VER
  && mv spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION} spark \
  && rm spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}.tgz
 
-# Add useful connectors (Delta, AWS, Azure, MySQL)
-WORKDIR $SPARK_HOME/jars
+# Add connectors (Delta, AWS, Azure, MySQL)
+WORKDIR ${SPARK_HOME}/jars
 RUN wget https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoop-aws-3.3.4.jar && \
     wget https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.375/aws-java-sdk-bundle-1.12.375.jar && \
     wget https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-azure/3.3.4/hadoop-azure-3.3.4.jar && \
@@ -99,27 +100,26 @@ RUN wget https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoo
 ###########################################
 FROM spark-base AS final
 
-# Create non-root user WITH home directory
+# Non-root user with home dir
 RUN groupadd -r -g 185 spark && \
     useradd -m -r -u 185 -g 185 -d /home/spark spark
 
-# Set HOME and Jupyter runtime dir
-ENV HOME=/home/spark
-ENV JUPYTER_PORT=8888
-ENV JUPYTER_DIR=/opt/spark/work-dir/notebooks
-ENV PYSPARK_PYTHON=/usr/local/bin/python3.11
-ENV PYSPARK_DRIVER_PYTHON=/usr/local/bin/python3.11
-# Explicit PYTHONPATH for PySpark
-ENV PYTHONPATH="${SPARK_HOME}/python:${SPARK_HOME}/python/lib/py4j-0.10.9.7-src.zip"
+# Env for Jupyter + PySpark
+ENV HOME=/home/spark \
+    JUPYTER_PORT=8888 \
+    JUPYTER_DIR=/opt/spark/work-dir/notebooks \
+    PYSPARK_PYTHON=/usr/local/bin/python3.11 \
+    PYSPARK_DRIVER_PYTHON=/usr/local/bin/python3.11 \
+    PYTHONPATH="${SPARK_HOME}/python"
 
-# Install PySpark + JupyterLab + common libs
+# PySpark + JupyterLab + libs
 RUN pip install --no-cache-dir \
-    pyspark==3.5.6 \
+    pyspark==3.5.7 \
     pandas \
     numpy \
     jupyterlab==4.2.5
 
-# Prepare directories Jupyter expects and fix ownership
+# Dirs Jupyter + notebooks
 RUN mkdir -p "${JUPYTER_DIR}" \
     && mkdir -p "${HOME}/.local/share/jupyter/runtime" \
     && mkdir -p "${HOME}/.jupyter" \
@@ -130,4 +130,5 @@ WORKDIR ${JUPYTER_DIR}
 
 EXPOSE 8888
 
+# Default: start JupyterLab (K8s manifest pode override se quiser usar só spark-submit)
 ENTRYPOINT ["bash","-lc","jupyter lab --ip=0.0.0.0 --port=${JUPYTER_PORT} --no-browser --ServerApp.root_dir=${JUPYTER_DIR} --ServerApp.token='' --ServerApp.password=''"]
