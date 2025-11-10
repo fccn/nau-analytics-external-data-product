@@ -1,4 +1,5 @@
 # syntax=docker/dockerfile:1
+
 ###########################################
 # Stage 1: Build Python 3.11.6 from source
 ###########################################
@@ -6,6 +7,7 @@ FROM ubuntu:22.04 AS python-build
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHON_VERSION=3.11.6
 ENV PREFIX=/usr/local
+
 RUN apt-get update && apt-get install -y \
     build-essential \
     wget \
@@ -19,31 +21,38 @@ RUN apt-get update && apt-get install -y \
     libsqlite3-dev \
     libbz2-dev \
  && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /usr/src
+
 RUN wget https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tgz \
  && tar -xzf Python-${PYTHON_VERSION}.tgz
+
 WORKDIR /usr/src/Python-${PYTHON_VERSION}
+
 RUN ./configure --enable-optimizations --prefix=${PREFIX} \
  && make -j"$(nproc)" \
  && make altinstall
+
 RUN ln -sf ${PREFIX}/bin/python3.11 /usr/local/bin/python \
  && ln -sf ${PREFIX}/bin/pip3.11 /usr/local/bin/pip
 
 ###########################################
 # Stage 2: Get entrypoint from official Spark
 ###########################################
-FROM apache/spark:3.5.5 AS spark-official
+FROM apache/spark:3.5.6 AS spark-official
 
 ###########################################
 # Stage 3: Spark + Delta + Cloud connectors
 ###########################################
 FROM ubuntu:22.04 AS spark-base
-ARG SPARK_VERSION=3.5.5
+
+ARG SPARK_VERSION=3.5.6
 ARG HADOOP_VERSION=3
 ARG DELTA_VERSION=3.2.1
+
 ENV DEBIAN_FRONTEND=noninteractive
 ENV SPARK_HOME=/opt/spark
-ENV PATH=$SPARK_HOME/bin:$PATH
+ENV PATH="$SPARK_HOME/bin:$PATH"
 
 # Install Java + basic utilities
 RUN apt-get update && apt-get install -y \
@@ -56,7 +65,7 @@ RUN apt-get update && apt-get install -y \
     procps \
  && rm -rf /var/lib/apt/lists/*
 
-# Copy compiled Python
+# Copy compiled Python from builder
 COPY --from=python-build /usr/local /usr/local
 
 # Copy entrypoint script from official Spark image
@@ -95,31 +104,30 @@ RUN groupadd -r -g 185 spark && \
     useradd -m -r -u 185 -g 185 -d /home/spark spark
 
 # Set HOME and Jupyter runtime dir
-ENV HOME=/home/spark \
-    JUPYTER_PORT=8888 \
-    JUPYTER_DIR=/opt/spark/work-dir/notebooks \
-    PYSPARK_PYTHON=/usr/local/bin/python3.11 \
-    PYSPARK_DRIVER_PYTHON=/usr/local/bin/python3.11
-# Definir PYTHONPATH separado (sem depender de anterior)
+ENV HOME=/home/spark
+ENV JUPYTER_PORT=8888
+ENV JUPYTER_DIR=/opt/spark/work-dir/notebooks
+ENV PYSPARK_PYTHON=/usr/local/bin/python3.11
+ENV PYSPARK_DRIVER_PYTHON=/usr/local/bin/python3.11
+# Explicit PYTHONPATH for PySpark
 ENV PYTHONPATH="${SPARK_HOME}/python:${SPARK_HOME}/python/lib/py4j-0.10.9.7-src.zip"
-# ✅ Install PySpark + JupyterLab + common libs
+
+# Install PySpark + JupyterLab + common libs
 RUN pip install --no-cache-dir \
-    pyspark==3.5.5 \
+    pyspark==3.5.6 \
     pandas \
     numpy \
     jupyterlab==4.2.5
 
 # Prepare directories Jupyter expects and fix ownership
-RUN mkdir -p ${JUPYTER_DIR} \
-    && mkdir -p ${HOME}/.local/share/jupyter/runtime \
-    && mkdir -p ${HOME}/.jupyter \
+RUN mkdir -p "${JUPYTER_DIR}" \
+    && mkdir -p "${HOME}/.local/share/jupyter/runtime" \
+    && mkdir -p "${HOME}/.jupyter" \
     && chown -R spark:spark /home/spark /opt/spark
 
 USER 185
 WORKDIR ${JUPYTER_DIR}
 
-# Expose port for Jupyter
 EXPOSE 8888
 
-# EntryPoint: use ServerApp.root_dir (notebook_dir is deprecated)
 ENTRYPOINT ["bash","-lc","jupyter lab --ip=0.0.0.0 --port=${JUPYTER_PORT} --no-browser --ServerApp.root_dir=${JUPYTER_DIR} --ServerApp.token='' --ServerApp.password=''"]
