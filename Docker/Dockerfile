@@ -32,13 +32,13 @@ RUN ln -sf ${PREFIX}/bin/python3.11 /usr/local/bin/python \
 ###########################################
 # Stage 2: Get entrypoint from official Spark
 ###########################################
-FROM apache/spark:3.5.6 AS spark-official
+FROM apache/spark:3.5.5 AS spark-official
 
 ###########################################
 # Stage 3: Spark + Delta + Cloud connectors
 ###########################################
 FROM ubuntu:22.04 AS spark-base
-ARG SPARK_VERSION=3.5.6
+ARG SPARK_VERSION=3.5.5
 ARG HADOOP_VERSION=3
 ARG DELTA_VERSION=3.2.1
 ENV DEBIAN_FRONTEND=noninteractive
@@ -99,12 +99,12 @@ ENV HOME=/home/spark \
     JUPYTER_PORT=8888 \
     JUPYTER_DIR=/opt/spark/work-dir/notebooks \
     PYSPARK_PYTHON=/usr/local/bin/python3.11 \
-    PYSPARK_DRIVER_PYTHON=/usr/local/bin/python3.11 \
-    PYTHONPATH="${SPARK_HOME}/python:${SPARK_HOME}/python/lib/py4j-0.10.9.7-src.zip:${PYTHONPATH}"
-
+    PYSPARK_DRIVER_PYTHON=/usr/local/bin/python3.11
+# Definir PYTHONPATH separado (sem depender de anterior)
+ENV PYTHONPATH="${SPARK_HOME}/python:${SPARK_HOME}/python/lib/py4j-0.10.9.7-src.zip"
 # ✅ Install PySpark + JupyterLab + common libs
 RUN pip install --no-cache-dir \
-    pyspark==3.5.6 \
+    pyspark==3.5.5 \
     pandas \
     numpy \
     jupyterlab==4.2.5
