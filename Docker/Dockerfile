@@ -32,13 +32,13 @@ RUN ln -sf ${PREFIX}/bin/python3.11 /usr/local/bin/python \
 ###########################################
 # Stage 2: Get entrypoint from official Spark
 ###########################################
-FROM apache/spark:3.5.6 AS spark-official
+FROM apache/spark:3.5.7 AS spark-official
 
 ###########################################
 # Stage 3: Spark + Delta + Cloud connectors
 ###########################################
 FROM ubuntu:22.04 AS spark-base
-ARG SPARK_VERSION=3.5.6
+ARG SPARK_VERSION=3.5.7
 ARG HADOOP_VERSION=3
 ARG DELTA_VERSION=3.2.1
 ENV DEBIAN_FRONTEND=noninteractive
