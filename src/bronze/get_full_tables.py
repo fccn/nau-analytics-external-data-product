@@ -1,9 +1,9 @@
-from pyspark.sql import SparkSession
-import pyspark.sql.functions as F
+from pyspark.sql import SparkSession #type:ignore
+import pyspark.sql.functions as F #type:ignore
 import os
 import logging
 
-logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 ###################################################################################
 #                           GET MYSQL CREDENTIALS                                 #
 ###################################################################################
@@ -29,7 +29,8 @@ TABLES = [
 "course_overviews_courseoverview", 
 "student_courseenrollment", 
 "certificates_generatedcertificate",
-"student_courseaccessrole"]
+"student_courseaccessrole"
+]
 
 for table in TABLES:
     logging.info(f"getting table {table}")
@@ -64,8 +65,9 @@ for table in TABLES:
 
         df = df.withColumn("ingestion_date", F.current_timestamp()) \
                .withColumn("source_name", F.lit(table))
-        output_path = S3_SAVEPATH + table
-        #df.write.format("delta").mode("overwrite").save(output_path)
+        output_path = f"{S3_SAVEPATH}/{table}"
+        
+        df.write.format("delta").mode("overwrite").save(output_path)
 
         logger.info(f"Data saved as Delta table to {output_path}")
         spark.stop()
