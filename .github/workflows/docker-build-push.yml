@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - '**'
+    paths:
+      - 'src/**'
+      - 'Docker/**'
   workflow_dispatch:
 
 jobs:
