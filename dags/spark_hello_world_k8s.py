@@ -1,25 +1,35 @@
 from datetime import datetime, timedelta
 
 from airflow import DAG
-from airflow.providers.cncf.kubernetes.operators.kubernetes_pod import KubernetesPodOperator
+from airflow.providers.cncf.kubernetes.operators.spark_kubernetes import (
+    SparkKubernetesOperator,
+)
+from airflow.providers.cncf.kubernetes.sensors.spark_kubernetes import (
+    SparkKubernetesSensor,
+)
 
-# DAG simples só para testar o fluxo fim-a-fim
 with DAG(
     dag_id="spark_hello_world_k8s",
     start_date=datetime(2025, 1, 1),
-    schedule_interval=None,  # trigger manual via UI
+    schedule_interval=None,  # no cliente será provavelmente um cron
     catchup=False,
     dagrun_timeout=timedelta(minutes=30),
-    tags=["demo", "spark", "kubernetes"],
+    tags=["spark", "kubernetes", "prod"],
 ) as dag:
 
-    spark_hello = KubernetesPodOperator(
-        task_id="spark_hello",
-        name="spark-hello-world",
+    submit_spark = SparkKubernetesOperator(
+        task_id="submit_spark_hello",
         namespace="data-platform",
-        image="nauedu/nau-analytics-external-data-product:feat_add_jupyter_to_dockerfile",
-        cmds=["bash", "-lc"],
-        arguments=["python /opt/spark/src/jobs/hello_spark.py"],
-        is_delete_operator_pod=True,
-        in_cluster=True,
+        # caminho dentro do container do scheduler (já explico abaixo)
+        application_file="k8s/spark-hello.yaml",
+        do_xcom_push=True,
     )
+
+    monitor_spark = SparkKubernetesSensor(
+        task_id="monitor_spark_hello",
+        namespace="data-platform",
+        application_name="{{ task_instance.xcom_pull('submit_spark_hello')['metadata']['name'] }}",
+        attach_log=True,
+    )
+
+    submit_spark >> monitor_spark

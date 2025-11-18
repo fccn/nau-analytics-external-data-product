@@ -1,0 +1,26 @@
+apiVersion: "sparkoperator.k8s.io/v1beta2"
+kind: SparkApplication
+metadata:
+  name: spark-hello-world
+  namespace: data-platform
+spec:
+  type: Python
+  mode: cluster
+  image: "nauedu/nau-analytics-external-data-product:feat_add_jupyter_to_dockerfile"
+  imagePullPolicy: IfNotPresent
+  mainApplicationFile: "local:///opt/spark/src/jobs/hello_spark_job.py"
+  sparkVersion: "3.5.7"
+  restartPolicy:
+    type: Never
+  driver:
+    cores: 1
+    memory: "1g"
+    serviceAccount: spark-sa
+    labels:
+      role: spark-driver
+  executor:
+    cores: 1
+    instances: 2
+    memory: "1g"
+    labels:
+      role: spark-executor
