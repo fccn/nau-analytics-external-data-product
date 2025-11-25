@@ -15,6 +15,11 @@ logging.basicConfig(
     ]
 )
 
+def get_required_env(env_name:str) -> str:
+    env_value = os.getenv(env_name)
+    if env_value is None:
+        raise ValueError(f"Environment variable {env_name} is not set")
+    return env_value
 
 
 
@@ -67,10 +72,12 @@ def get_spark_session(S3_ACCESS_KEY: str,S3_SECRET_KEY: str , S3_ENDPOINT: str) 
 
 
 def full_initial_ingestion(spark: SparkSession, table: str, savepath: str, jdbc_url:str, MYSQL_USER:str, MYSQL_SECRET:str) -> Tuple[bool, str]:
-    years = [i for i in range(2019,2100)]
-    months = [i for i in range(1,13)]
     current_year = datetime.now().year
     current_month = datetime.now().month
+    last_year_in_loop = int(current_year)+1
+    years = [i for i in range(2019,last_year_in_loop)]
+    months = [i for i in range(1,13)]
+
     path = f"{savepath}/{table}"
     
     for year in years:
@@ -162,17 +169,17 @@ def delta_load(spark: SparkSession, jdbc_url:str, MYSQL_USER:str, MYSQL_SECRET:s
 
 def main() -> None:
 
-    MYSQL_DATABASE = os.getenv("MYSQL_DATABASE")
-    MYSQL_HOST = os.getenv("MYSQL_HOST")
-    MYSQL_PORT = os.getenv("MYSQL_PORT")
-    MYSQL_USER = str(os.getenv("MYSQL_USER"))
-    MYSQL_SECRET = str(os.getenv("MYSQL_SECRET"))
+    MYSQL_DATABASE = get_required_env("MYSQL_DATABASE")
+    MYSQL_HOST = get_required_env("MYSQL_HOST")
+    MYSQL_PORT = get_required_env("MYSQL_PORT")
+    MYSQL_USER = get_required_env("MYSQL_USER")
+    MYSQL_SECRET = get_required_env("MYSQL_SECRET")
     jdbc_url = f"jdbc:mysql://{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}"
 
-    S3_ACCESS_KEY = str(os.getenv("S3_ACCESS_KEY"))
-    S3_SECRET_KEY = str(os.getenv("S3_SECRET_KEY"))
-    S3_ENDPOINT = str(os.getenv("S3_ENDPOINT"))
-
+    S3_ACCESS_KEY = get_required_env("S3_ACCESS_KEY")
+    S3_SECRET_KEY = get_required_env("S3_SECRET_KEY")
+    S3_ENDPOINT = get_required_env("S3_ENDPOINT")
+    
     args = get_args()
     savepath = args.savepath
     metadata = args.metadatapath

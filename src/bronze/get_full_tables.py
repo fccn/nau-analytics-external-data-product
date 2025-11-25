@@ -1,8 +1,10 @@
 from pyspark.sql import SparkSession #type:ignore
+from pyspark.sql import Dataframe #type:ignore
 import pyspark.sql.functions as F #type:ignore
 import argparse
 import os
 import logging
+from typing import List, Union, Optional,Tuple
 
 logging.basicConfig(
     level=logging.INFO,
@@ -11,6 +13,12 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
+def get_required_env(env_name:str) -> str:
+    env_value = os.getenv(env_name)
+    if env_value is None:
+        raise ValueError(f"Environment variable {env_name} is not set")
+    return env_value
+
 def get_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--savepath", type = str,required= True, help = "The S3 bucket intended for the data to be stored")
@@ -21,7 +29,7 @@ def get_args() -> argparse.Namespace:
 def get_spark_session(S3_ACCESS_KEY: str,S3_SECRET_KEY: str , S3_ENDPOINT: str) -> SparkSession:
     
     spark = SparkSession.builder \
-        .appName("incremental_table_ingestion") \
+        .appName("full_table_ingestion") \
         .config("spark.jars", "/opt/spark/jars/hadoop-aws-3.3.4.jar,/opt/spark/jars/aws-java-sdk-bundle-1.12.375.jar,/opt/spark/jars/delta-spark_2.12-3.2.1.jar,/opt/spark/jars/delta-storage-3.2.1.jar,/opt/spark/jars/delta-kernel-api-3.2.1.jar,/opt/spark/jars/mysql-connector-j-8.3.0.jar") \
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")\
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")\
@@ -33,26 +41,26 @@ def get_spark_session(S3_ACCESS_KEY: str,S3_SECRET_KEY: str , S3_ENDPOINT: str) 
         .getOrCreate()
     return spark 
 
-###################################################################################
-#                           GET MYSQL CREDENTIALS                                 #
-###################################################################################
+def add_ingestion_metadata_column(df: Dataframe,table: str) -> Dataframe:
+    tmp_df = df.withColumn("ingestion_date", F.current_timestamp()).withColumn("source_name", F.lit(table))
+    return tmp_df
+
+def add_date_partition_columns(df: Dataframe,column_name:str) -> Dataframe:
+    df = df.withColumn("year", F.year(F.col(column_name)))\
+        .withColumn("month", F.month(F.col(column_name)))\
+        .withColumn("day",F.day(column_name))
+
 def main() -> None:
-    MYSQL_DATABASE = os.getenv("MYSQL_DATABASE")
-    MYSQL_HOST = os.getenv("MYSQL_HOST")
-    MYSQL_PORT = os.getenv("MYSQL_PORT")
-    MYSQL_USER = os.getenv("MYSQL_USER")
-    MYSQL_SECRET = os.getenv("MYSQL_SECRET")
+    MYSQL_DATABASE = get_required_env("MYSQL_DATABASE")
+    MYSQL_HOST = get_required_env("MYSQL_HOST")
+    MYSQL_PORT = get_required_env("MYSQL_PORT")
+    MYSQL_USER = get_required_env("MYSQL_USER")
+    MYSQL_SECRET = get_required_env("MYSQL_SECRET")
     jdbc_url = f"jdbc:mysql://{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}"
 
-
-
-    ###################################################################################
-    #                           GET S3 CREDENTIALS                                    #
-    ###################################################################################
-    S3_ACCESS_KEY = str(os.getenv("S3_ACCESS_KEY"))
-    S3_SECRET_KEY = str(os.getenv("S3_SECRET_KEY"))
-    S3_ENDPOINT = str(os.getenv("S3_ENDPOINT"))
-
+    S3_ACCESS_KEY = get_required_env("S3_ACCESS_KEY")
+    S3_SECRET_KEY = get_required_env("S3_SECRET_KEY")
+    S3_ENDPOINT = get_required_env("S3_ENDPOINT")
     args = get_args()
     S3_SAVEPATH = args.savepath
     undesired_column = args.undesired_column
@@ -65,15 +73,15 @@ def main() -> None:
     "auth_userprofile",
     "student_userattribute",
     "organizations_organization",
+    "organizations_historicalorganization"
     "auth_user"
     ]
 
+    spark = get_spark_session(S3_ACCESS_KEY=S3_ACCESS_KEY,S3_SECRET_KEY=S3_SECRET_KEY,S3_ENDPOINT=S3_ENDPOINT)
     for table in TABLES:
 
         logging.info(f"getting table {table}")
         try:
-        
-            spark = get_spark_session(S3_ACCESS_KEY=S3_ACCESS_KEY,S3_SECRET_KEY=S3_SECRET_KEY,S3_ENDPOINT=S3_ENDPOINT)
 
             df = spark.read.format("jdbc") \
                 .option("url", jdbc_url) \
@@ -85,18 +93,20 @@ def main() -> None:
             if table == "auth_user":
                 df = df.drop(undesired_column)
 
-            df = df.withColumn("ingestion_date", F.current_timestamp()) \
-                   .withColumn("source_name", F.lit(table))
+            df = add_ingestion_metadata_column(df=df,table=table)
+            df = add_date_partition_columns(df,"ingestion_date")
             if table == "auth_user" and undesired_column and undesired_column in df.columns:
                 raise Exception("THE undesired column stills in the dataframe")
+            
             output_path = f"{S3_SAVEPATH}/{table}"
 
-            df.write.format("delta").mode("append").save(output_path)
+            df.write.format("delta").mode("append").partitionBy("year", "month","day").save(output_path)
 
             logging.info(f"Data saved as Delta table to {output_path}")
 
         except Exception as e:
             logging.error(f"Pipeline failed: {e}")
+    
     spark.stop()
 
 
