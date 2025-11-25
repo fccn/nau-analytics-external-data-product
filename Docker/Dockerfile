@@ -96,7 +96,7 @@ RUN wget https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoo
     wget https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.3.0/mysql-connector-j-8.3.0.jar
 
 ###########################################
-# Stage 4: Final runtime image for K8s (Spark jobs)
+# Stage 4: Final runtime image for K8s + Jupyter
 ###########################################
 FROM spark-base AS final
 
@@ -104,27 +104,31 @@ FROM spark-base AS final
 RUN groupadd -r -g 185 spark && \
     useradd -m -r -u 185 -g 185 -d /home/spark spark
 
-# Env para PySpark
+# Env for Jupyter + PySpark
 ENV HOME=/home/spark \
+    JUPYTER_PORT=8888 \
+    JUPYTER_DIR=/opt/spark/work-dir/notebooks \
     PYSPARK_PYTHON=/usr/local/bin/python3.11 \
     PYSPARK_DRIVER_PYTHON=/usr/local/bin/python3.11 \
     PYTHONPATH="${SPARK_HOME}/python"
 
-# 👉 COPIAR O CÓDIGO DO PROJECTO PARA DENTRO DA IMAGEM
-# (assumindo que fazes build a partir da raiz do repo com:
-#  docker build -f Docker/Dockerfile .)
-COPY --chown=spark:spark src /opt/spark/src
+# PySpark + JupyterLab + libs
+RUN pip install --no-cache-dir \
+    pyspark==3.5.7 \
+    pandas \
+    numpy \
+    jupyterlab==4.2.5
 
-# Garantir permissões
-RUN mkdir -p /opt/spark/work-dir && \
-    chown -R spark:spark /opt/spark /home/spark
+# Dirs Jupyter + notebooks
+RUN mkdir -p "${JUPYTER_DIR}" \
+    && mkdir -p "${HOME}/.local/share/jupyter/runtime" \
+    && mkdir -p "${HOME}/.jupyter" \
+    && chown -R spark:spark /home/spark /opt/spark
 
 USER 185
-WORKDIR /opt/spark/work-dir
+WORKDIR ${JUPYTER_DIR}
 
-# 👉 ENTRYPOINT DE PRODUÇÃO: usar o entrypoint oficial do Spark
-# (que já copiámos do apache/spark lá em cima)
-ENTRYPOINT ["/opt/entrypoint.sh"]
+EXPOSE 8888
 
-# Sem CMD fixo: o Spark Operator trata de passar o comando,
-# mainApplicationFile, etc., via SparkApplication
+# Default: start JupyterLab (K8s manifest pode override se quiser usar só spark-submit)
+ENTRYPOINT ["bash","-lc","jupyter lab --ip=0.0.0.0 --port=${JUPYTER_PORT} --no-browser --ServerApp.root_dir=${JUPYTER_DIR} --ServerApp.token='' --ServerApp.password=''"]
