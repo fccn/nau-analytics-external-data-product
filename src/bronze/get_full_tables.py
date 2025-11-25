@@ -1,5 +1,5 @@
 from pyspark.sql import SparkSession #type:ignore
-from pyspark.sql import Dataframe #type:ignore
+from pyspark.sql import DataFrame #type:ignore
 import pyspark.sql.functions as F #type:ignore
 import argparse
 import os
@@ -41,11 +41,11 @@ def get_spark_session(S3_ACCESS_KEY: str,S3_SECRET_KEY: str , S3_ENDPOINT: str) 
         .getOrCreate()
     return spark 
 
-def add_ingestion_metadata_column(df: Dataframe,table: str) -> Dataframe:
+def add_ingestion_metadata_column(df: DataFrame,table: str) -> DataFrame:
     tmp_df = df.withColumn("ingestion_date", F.current_timestamp()).withColumn("source_name", F.lit(table))
     return tmp_df
 
-def add_date_partition_columns(df: Dataframe,column_name:str) -> Dataframe:
+def add_date_partition_columns(df: DataFrame,column_name:str) -> DataFrame:
     df = df.withColumn("year", F.year(F.col(column_name)))\
         .withColumn("month", F.month(F.col(column_name)))\
         .withColumn("day",F.day(column_name))
