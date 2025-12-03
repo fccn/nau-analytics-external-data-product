@@ -49,6 +49,7 @@ def add_date_partition_columns(df: DataFrame,column_name:str) -> DataFrame:
     df = df.withColumn("year", F.year(F.col(column_name)))\
         .withColumn("month", F.month(F.col(column_name)))\
         .withColumn("day",F.day(column_name))
+    return df
 
 def main() -> None:
     MYSQL_DATABASE = get_required_env("MYSQL_DATABASE")
