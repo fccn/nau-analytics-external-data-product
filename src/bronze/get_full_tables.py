@@ -106,6 +106,7 @@ def main() -> None:
 
         except Exception as e:
             logging.error(f"Pipeline failed: {e}")
+            raise Exception(f"Pipeline fail {e}")
     
     spark.stop()
 
