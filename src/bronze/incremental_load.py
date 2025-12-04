@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime,date, timedelta
 from pyspark.sql import SparkSession # type: ignore
 from pyspark.sql import DataFrame #type:ignore
 import pyspark.sql.functions as F # type: ignore
@@ -15,6 +15,7 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
+
 
 def get_required_env(env_name:str) -> str:
     env_value = os.getenv(env_name)
@@ -87,62 +88,45 @@ def add_ingestion_metadata_column(df: DataFrame,table: str) -> DataFrame:
 
 def add_date_partition_columns(df: DataFrame,column_name:str) -> DataFrame:
     df = df.withColumn("year", F.year(F.col(column_name)))\
-        .withColumn("month", F.month(F.col(column_name)))
+        .withColumn("month", F.month(F.col(column_name)))\
+        .withColumn("day", F.day(F.col(column_name)))
     return df
 
+def get_all_dates_until_today(start_date: date):
+    dates = []
+    current = start_date
+    today = date.today()
+    while current <= today:
+        dates.append(current)
+        current += timedelta(days=1)
+    return dates
+
 def full_initial_ingestion(spark: SparkSession, table: str, savepath: str, jdbc_url:str, MYSQL_USER:str, MYSQL_SECRET:str) -> Tuple[bool, str]:
+    processing_dates = get_all_dates_until_today(date(2019,1,1))
     current_year = datetime.now().year
     current_month = datetime.now().month
-    last_year_in_loop = int(current_year)+1
-    years = [i for i in range(2019,last_year_in_loop)]
-    months = [i for i in range(1,13)]
-
+    current_day = datetime.now().day
     path = f"{savepath}/{table}"
     
-    for year in years:
-        for month in months:
-            if (year > current_year) or (year == current_year and month > current_month):
-                break 
-            
-            if (year == 2019 and month ==1):
-                query = f"(SELECT * FROM {table} WHERE YEAR(created) = {year} AND MONTH(created) = {month}) AS limited_table"
-                logging.info(query)
-                df = spark.read.format("jdbc") \
-                    .option("url", jdbc_url) \
-                    .option("user", MYSQL_USER) \
-                    .option("password", MYSQL_SECRET) \
-                    .option("driver", "com.mysql.cj.jdbc.Driver") \
-                    .option("dbtable", query) \
-                    .load() 
-                df = df.withColumn("created", F.date_format("created", "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"))
-                df = add_date_partition_columns(df=df, column_name="created")
-                df = add_ingestion_metadata_column(df=df,table=table)
+    for d in processing_dates:
+        query = f"(SELECT * FROM {table} WHERE YEAR(created) = {d.year} AND MONTH(created) = {d.month} AND DAY(created) ={d.day}) AS limited_table"
+        logging.info(query)
+        df = spark.read.format("jdbc") \
+            .option("url", jdbc_url) \
+            .option("user", MYSQL_USER) \
+            .option("password", MYSQL_SECRET) \
+            .option("driver", "com.mysql.cj.jdbc.Driver") \
+            .option("dbtable", query) \
+            .load() 
+        df = df.withColumn("created", F.date_format("created", "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"))
+        df = add_date_partition_columns(df=df, column_name="created")
+        df = add_ingestion_metadata_column(df=df,table=table)
                 
-                df.write.format("delta") \
-                    .mode("overwrite") \
-                    .partitionBy("year", "month") \
-                    .save(path)
-                continue
-            else:
-                
-                query = f"(SELECT * FROM {table} WHERE YEAR(created) = {year} AND MONTH(created) = {month}) AS limited_table"
-                logging.info(query)
-                new_df = spark.read.format("jdbc") \
-                    .option("url", jdbc_url) \
-                    .option("user", MYSQL_USER) \
-                    .option("password", MYSQL_SECRET) \
-                    .option("driver", "com.mysql.cj.jdbc.Driver") \
-                    .option("dbtable", query) \
-                    .load()
-                if (year == current_year and month == current_month):
-                    last_update =  datetime.now().isoformat()
-                incremental_df = new_df.withColumn("created", F.date_format("created", "yyyy-MM-dd'T'HH:mm:ss.SSSSSS")) 
-                incremental_df = add_date_partition_columns(df=incremental_df, column_name="created")
-                
-                incremental_df = add_ingestion_metadata_column(df=incremental_df,table=table)
 
-                # Append new partitions directly
-                incremental_df.write.format("delta").mode("append").partitionBy("year", "month").save(path)
+        if (d.year == current_year and d.month == current_month and d.day == current_day):
+            last_update =  datetime.now().isoformat()
+        
+        df.write.format("delta").mode("append").partitionBy("year", "month","day").save(path)
     return (True, last_update)
 
 
