@@ -65,7 +65,8 @@ def main() -> None:
     "auth_userprofile",
     "student_userattribute",
     "organizations_organization",
-    "auth_user"
+    "auth_user",
+    "organizations_historicalorganization"
     ]
 
     for table in TABLES:
