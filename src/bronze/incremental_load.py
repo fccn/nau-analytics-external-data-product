@@ -153,7 +153,7 @@ def delta_load(spark: SparkSession, jdbc_url:str, MYSQL_USER:str, MYSQL_SECRET:s
     incremental_df = incremental_df.withColumn("ingestion_date", F.current_timestamp()).withColumn("source_name", F.lit(table))
 
                 # Append new partitions directly
-    incremental_df.write.format("delta").mode("append").partitionBy("year", "month").save(path)    
+    incremental_df.write.format("delta").mode("append").partitionBy("year", "month","day").save(path)    
     
     return (True,last_update)
 
