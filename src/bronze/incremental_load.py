@@ -102,7 +102,7 @@ def get_all_dates_until_today(start_date: date):
     return dates
 
 def full_initial_ingestion(spark: SparkSession, table: str, savepath: str, jdbc_url:str, MYSQL_USER:str, MYSQL_SECRET:str) -> Tuple[bool, str]:
-    processing_dates = get_all_dates_until_today(date(2019,1,1))
+    processing_dates = get_all_dates_until_today(date(2024,1,1))
     current_year = datetime.now().year
     current_month = datetime.now().month
     current_day = datetime.now().day
