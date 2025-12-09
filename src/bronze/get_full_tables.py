@@ -75,6 +75,7 @@ def main() -> None:
     "student_userattribute",
     "organizations_organization",
     "organizations_historicalorganization",
+    "grades_persistentcoursegrade",
     "auth_user"
     ]
 

@@ -88,28 +88,31 @@ def add_ingestion_metadata_column(df: DataFrame,table: str) -> DataFrame:
 
 def add_date_partition_columns(df: DataFrame,column_name:str) -> DataFrame:
     df = df.withColumn("year", F.year(F.col(column_name)))\
-        .withColumn("month", F.month(F.col(column_name)))\
-        .withColumn("day", F.day(F.col(column_name)))
+        .withColumn("month", F.month(F.col(column_name)))
     return df
 
 def get_all_dates_until_today(start_date: date):
-    dates = []
-    current = start_date
+    months = []
+    year, month = start_date.year, start_date.month
     today = date.today()
-    while current <= today:
-        dates.append(current)
-        current += timedelta(days=1)
-    return dates
+
+    while (year < today.year) or (year == today.year and month <= today.month):
+        months.append(date(year, month,1))
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
+
+    return months
 
 def full_initial_ingestion(spark: SparkSession, table: str, savepath: str, jdbc_url:str, MYSQL_USER:str, MYSQL_SECRET:str) -> Tuple[bool, str]:
-    processing_dates = get_all_dates_until_today(date(2024,1,1))
+    processing_dates = get_all_dates_until_today(date(2020,1,1))
     current_year = datetime.now().year
     current_month = datetime.now().month
-    current_day = datetime.now().day
     path = f"{savepath}/{table}"
     
     for d in processing_dates:
-        query = f"(SELECT * FROM {table} WHERE YEAR(created) = {d.year} AND MONTH(created) = {d.month} AND DAY(created) ={d.day}) AS limited_table"
+        query = f"(SELECT * FROM {table} WHERE YEAR(created) = {d.year} AND MONTH(created) = {d.month}) AS limited_table"
         logging.info(query)
         df = spark.read.format("jdbc") \
             .option("url", jdbc_url) \
@@ -123,10 +126,11 @@ def full_initial_ingestion(spark: SparkSession, table: str, savepath: str, jdbc_
         df = add_ingestion_metadata_column(df=df,table=table)
                 
 
-        if (d.year == current_year and d.month == current_month and d.day == current_day):
+        if d == processing_dates[-1]:
             last_update =  datetime.now().isoformat()
+            logging.info(f"Last ingestion from full tables: {d}")
         
-        df.write.format("delta").mode("append").partitionBy("year", "month","day").save(path)
+        df.write.format("delta").mode("append").partitionBy("year", "month").save(path)
     return (True, last_update)
 
 
@@ -150,10 +154,10 @@ def delta_load(spark: SparkSession, jdbc_url:str, MYSQL_USER:str, MYSQL_SECRET:s
     incremental_df = add_date_partition_columns(df=incremental_df,column_name="created")
     incremental_df = add_ingestion_metadata_column(df=incremental_df,table=table)
     
-    incremental_df = incremental_df.withColumn("ingestion_date", F.current_timestamp()).withColumn("source_name", F.lit(table))
+    #incremental_df = incremental_df.withColumn("ingestion_date", F.current_timestamp()).withColumn("source_name", F.lit(table))
 
                 # Append new partitions directly
-    incremental_df.write.format("delta").mode("append").partitionBy("year", "month","day").save(path)    
+    incremental_df.write.format("delta").mode("append").partitionBy("year", "month").save(path)    
     
     return (True,last_update)
 
