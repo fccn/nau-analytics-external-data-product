@@ -29,17 +29,30 @@ logger = logging.getLogger("dim_external_course_etl")
 # ===============================================================
 
 def start_spark():
-    return (
+    from pyspark.sql import SparkSession
+    import os
+
+    S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY")
+    S3_SECRET_KEY = os.getenv("S3_SECRET_KEY")
+    S3_ENDPOINT   = os.getenv("S3_ENDPOINT", "https://rgw.nau.fccn.pt")
+
+    spark = (
         SparkSession.builder
         .appName("dim_external_course_etl")
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
         .config("spark.databricks.delta.schema.autoMerge.enabled", "true")
-        .getOrCreate()
+        # Config S3A / Ceph
+        .config("spark.hadoop.fs.s3a.access.key", S3_ACCESS_KEY)
+        .config("spark.hadoop.fs.s3a.secret.key", S3_SECRET_KEY)
+        .config("spark.hadoop.fs.s3a.endpoint", S3_ENDPOINT)
+        .config("spark.hadoop.fs.s3a.path.style.access", "true")
+        .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
     )
 
-spark = start_spark()
+    return spark.getOrCreate()
 
+spark = start_spark()
 
 # ===============================================================
 # 2. Configurações (paths)
@@ -152,14 +165,14 @@ def clean_course_bronze(df_bronze):
             "display_org_with_default",
             "display_name",
             "display_number_with_default",
-            F.col("created").cast("timestamp"),
-            F.col("modified").cast("timestamp"),
-            F.col("start").cast("timestamp"),
-            F.col("end").cast("timestamp"),
-            F.col("enrollment_start").cast("timestamp"),
-            F.col("enrollment_end").cast("timestamp"),
-            "certificate_available_date",
-            "announcement",
+            F.col("created").cast("timestamp").alias("created"),
+            F.col("modified").cast("timestamp").alias("modified"),
+            F.col("start").cast("timestamp").alias("start"),
+            F.col("end").cast("timestamp").alias("end"),
+            F.col("enrollment_start").cast("timestamp").alias("enrollment_start"),
+            F.col("enrollment_end").cast("timestamp").alias("enrollment_end"),
+            F.col("certificate_available_date").cast("timestamp").alias("certificate_available_date"),
+            F.col("announcement").cast("timestamp").alias("announcement"),
             "catalog_visibility",
             "self_paced",
             "visible_to_staff_only",
@@ -172,7 +185,7 @@ def clean_course_bronze(df_bronze):
             "has_any_active_web_certificate",
             "cert_name_short",
             "cert_name_long",
-            "lowest_passing_grade",
+            F.col("lowest_passing_grade").cast("decimal(5,2)").alias("lowest_passing_grade"),
             "advertised_start",
             "effort",
             "short_description",
@@ -182,12 +195,14 @@ def clean_course_bronze(df_bronze):
             "marketing_url",
             "social_sharing_url",
             "language",
-            "max_student_enrollments_allowed",
-            "ingestion_date",
+            F.col("max_student_enrollments_allowed").cast("int").alias("max_student_enrollments_allowed"),
+            F.col("ingestion_date").cast("timestamp").alias("ingestion_date"),
             "source_name"
         )
         .dropDuplicates(["course_id"])
+        .filter(F.col("course_id").isNotNull())
     )
+
     logger.info(f"Registos após clean_course_bronze: {df.count()}")
     return df
 
@@ -196,17 +211,39 @@ def clean_course_bronze(df_bronze):
 # ===============================================================
 
 def apply_hash(df):
-    business_cols = [c for c in df.columns if c not in ("record_hash",)]
-    df_hash = df.withColumn(
+    """
+    Calcula hash determinístico apenas com colunas de negócio.
+    Exclui colunas técnicas (SKs, timestamps SCD, ingestão, hash anterior).
+    """
+
+    technical_cols = {
+        "course_sk",
+        "organization_sk",
+        "record_hash",
+        "valid_from",
+        "valid_to",
+        "is_current",
+        "ingestion_timestamp",
+        "ingestion_date",
+        "source_name"
+    }
+
+    business_cols = [c for c in df.columns if c not in technical_cols]
+
+    return df.withColumn(
         "record_hash",
         F.sha2(
             F.concat_ws(
-                "||", *(F.coalesce(F.col(c).cast("string"), F.lit("NULL")) for c in business_cols)
+                "||",
+                *[
+                    F.coalesce(F.col(c).cast("string"), F.lit("NULL"))
+                    for c in business_cols
+                ]
             ),
             256
         )
     )
-    return df_hash
+
 
 
 # ===============================================================
@@ -214,19 +251,29 @@ def apply_hash(df):
 # ===============================================================
 
 def join_dim_org(df_course, df_dim_org_enriched):
+    # 1) Criar lookup único por código normalizado
+    df_org_lookup = (
+        df_dim_org_enriched
+        .select(
+            normalize_org_code("organization_code").alias("org_code_dim"),
+            "organization_sk_current"
+        )
+        .dropDuplicates(["org_code_dim"])   # 👈 GARANTE 1:1 POR CÓDIGO
+    )
+
+    # 2) Fazer o join curso → organização atual
     df_join = (
         df_course.alias("c")
         .join(
-            df_dim_org_enriched.select(
-                normalize_org_code("organization_code").alias("org_code_dim"),
-                "organization_sk_current"
-            ).alias("o"),
+            df_org_lookup.alias("o"),
             F.col("c.course_org_code") == F.col("o.org_code_dim"),
             "left"
         )
         .withColumnRenamed("organization_sk_current", "organization_sk")
+        .drop("org_code_dim")
     )
     return df_join
+
 
 # ===============================================================
 # 9. Create Course Unique ID (Surrogate Key)
@@ -308,7 +355,28 @@ def merge_table(df_stage):
     spark.sql(merge_sql)
 
 # ===============================================================
-# 11. Pipeline principal
+# 11. Validate Silver Table
+# ===============================================================
+
+def validate_silver_table(spark, path: str):
+    logger.info(f"Validando tabela Silver em: {path}")
+    try:
+        df_silver = spark.read.format("delta").load(path)
+        logger.info("Schema da Dim_External_Course (Silver):")
+        df_silver.printSchema()
+
+        try:
+            row_count = df_silver.count()
+            logger.info(f"Total de registos na Dim_External_Course (Silver): {row_count}")
+        except Exception as e:
+            logger.warning(f"Falha ao fazer count() na Silver (possível fecho da sessão Spark). Erro: {e}")
+
+    except Exception as e:
+        logger.error(f"Falha ao validar a tabela Silver: {e}")
+
+    return row_count
+# ===============================================================
+# 12. Pipeline principal
 # ===============================================================
 
 def main():
@@ -320,11 +388,11 @@ def main():
     df_clean  = clean_course_bronze(df_bronze)
     df_hash   = apply_hash(df_clean)
     df_joined = join_dim_org(df_hash, df_dim_org_enriched)
-    df_with_sk = add_course_sk(df_joined)     # ⬅️ NOVO
+    df_with_sk = add_course_sk(df_joined)     
     df_stage  = build_stage(df_with_sk)
 
     merge_table(df_stage)
-
+    validate_silver_table(spark, SILVER_PATH_COURSE)    
     logger.info("Fim do ETL Dim_External_Course")
 
 
@@ -333,8 +401,6 @@ def main():
 # ===============================================================
 
 if __name__ == "__main__":
-    try:
-        main()
-    finally:
-        spark.stop()
-        logger.info("SparkSession stopped.")
+    main()
+    spark.stop()
+    logger.info("Stop Spark Session")
