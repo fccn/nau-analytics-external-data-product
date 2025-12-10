@@ -1,7 +1,7 @@
 import os
 from pyspark.sql import SparkSession #type:ignore
 
-class utils:
+class Utils:
     def __init__(self) -> None:
         pass
     
@@ -15,9 +15,13 @@ class utils:
     
         spark = SparkSession.builder \
             .appName(app_name) \
-            .config("spark.jars", "/opt/spark/jars/hadoop-aws-3.3.4.jar,/opt/spark/jars/aws-java-sdk-bundle-1.12.375.jar,/opt/spark/jars/delta-spark_2.12-3.2.1.jar,/opt/spark/jars/delta-storage-3.2.1.jar,/opt/spark/jars/delta-kernel-api-3.2.1.jar,/opt/spark/jars/mysql-connector-j-8.3.0.jar") \
-            .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")\
-            .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")\
+            .config("spark.jars", 
+                    "/opt/spark/jars/hadoop-aws-3.3.4.jar," 
+                    "/opt/spark/jars/aws-java-sdk-bundle-1.12.375.jar," 
+                    "/opt/spark/jars/mysql-connector-j-8.3.0.jar," 
+                    "/opt/spark/jars/iceberg-spark-runtime-3.5_2.12-1.10.0.jar") \
+            .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")\
+            .config("spark.sql.catalog.spark_catalog", "org.apache.iceberg.spark.SparkSessionCatalog")\
             .config("spark.hadoop.fs.s3a.access.key", S3_ACCESS_KEY) \
             .config("spark.hadoop.fs.s3a.secret.key", S3_SECRET_KEY) \
             .config("spark.hadoop.fs.s3a.endpoint", S3_ENDPOINT) \
