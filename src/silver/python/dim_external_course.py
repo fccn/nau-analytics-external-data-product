@@ -1,17 +1,28 @@
 # ===============================================================
 #  Dim External Course - Silver ETL
 #  Produção | Sistema NAU | FCCN
-#  Autor: Manoel
 #  Estrutura com boas práticas para pipelines Spark/Delta
 # ===============================================================
 
 import os
 import sys
+import logging
 from datetime import datetime
+
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 from pyspark.sql.utils import AnalysisException
+
+# ===============================================================
+# Logging
+# ===============================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger("dim_external_course_etl")
 
 # ===============================================================
 # 1. Configuração do Spark
@@ -177,8 +188,8 @@ def clean_course_bronze(df_bronze):
         )
         .dropDuplicates(["course_id"])
     )
+    logger.info(f"Registos após clean_course_bronze: {df.count()}")
     return df
-
 
 # ===============================================================
 # 7. Apply Hash
@@ -217,9 +228,30 @@ def join_dim_org(df_course, df_dim_org_enriched):
     )
     return df_join
 
+# ===============================================================
+# 9. Create Course Unique ID (Surrogate Key)
+# ===============================================================
+def add_course_sk(df):
+    """
+    Gera course_sk sequencial (1..N), determinístico por course_id.
+    """
+    if "course_id" not in df.columns:
+        raise ValueError("DataFrame não contém coluna 'course_id'; não é possível criar course_sk.")
+
+    window = Window.orderBy("course_id")
+
+    df_with_sk = df.withColumn(
+        "course_sk",
+        F.row_number().over(window).cast("int")
+    )
+
+    # course_sk primeiro, resto na ordem atual
+    cols = df_with_sk.columns
+    ordered_cols = ["course_sk"] + [c for c in cols if c != "course_sk"]
+    return df_with_sk.select(*ordered_cols) 
 
 # ===============================================================
-# 9. Build staging for SCD1
+# 10. Build staging for SCD1
 # ===============================================================
 
 def build_stage(df):
@@ -246,6 +278,8 @@ def merge_table(df_stage):
         table_exists = False
 
     if not table_exists:
+        logger.info("Tabela alvo não existe. Criando Delta inicial em %s", SILVER_PATH_COURSE)
+
         (
             df_stage.write
             .format("delta")
@@ -261,6 +295,8 @@ def merge_table(df_stage):
         """)
         return
 
+    logger.info("Executando MERGE SCD1 em %s", TARGET_TABLE)
+
     merge_sql = f"""
         MERGE INTO {TARGET_TABLE} AS t
         USING stg_dim_external_course AS s
@@ -271,21 +307,25 @@ def merge_table(df_stage):
 
     spark.sql(merge_sql)
 
-
 # ===============================================================
 # 11. Pipeline principal
 # ===============================================================
 
 def main():
+    logger.info("Início do ETL Dim_External_Course")
+
     df_bronze, df_dim_org = load_sources()
 
     df_dim_org_enriched = build_dim_org_enriched(df_dim_org)
-    df_clean = clean_course_bronze(df_bronze)
-    df_hash = apply_hash(df_clean)
+    df_clean  = clean_course_bronze(df_bronze)
+    df_hash   = apply_hash(df_clean)
     df_joined = join_dim_org(df_hash, df_dim_org_enriched)
-    df_stage = build_stage(df_joined)
+    df_with_sk = add_course_sk(df_joined)     # ⬅️ NOVO
+    df_stage  = build_stage(df_with_sk)
 
     merge_table(df_stage)
+
+    logger.info("Fim do ETL Dim_External_Course")
 
 
 # ===============================================================
@@ -293,5 +333,8 @@ def main():
 # ===============================================================
 
 if __name__ == "__main__":
-    main()
-    spark.stop()
+    try:
+        main()
+    finally:
+        spark.stop()
+        logger.info("SparkSession stopped.")
