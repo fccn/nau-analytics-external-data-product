@@ -235,6 +235,7 @@ def validate_dim_date(spark: SparkSession, silver_path: str):
 # -----------------------------
 def main():
     logger.info("Starting Dim_Date ETL")
+    logger.info(f"ENV SILVER_BUCKET={silver_base}")
     spark = None
 
     try:
