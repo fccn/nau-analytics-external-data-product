@@ -6,6 +6,7 @@ import os
 import logging
 from typing import List, Union, Optional,Tuple
 from utils.utils import Utils
+from utils.config import Config
 
 logging.basicConfig(
     level=logging.INFO,
@@ -15,7 +16,7 @@ logging.basicConfig(
     ]
 )
 
-utils_obj = Utils()
+utils_obj = Utils("dev")
 
 
 def get_args() -> argparse.Namespace:
@@ -37,6 +38,7 @@ def add_date_partition_columns(df: DataFrame,column_name:str) -> DataFrame:
     return df
 
 def main() -> None:
+
     MYSQL_DATABASE = utils_obj.get_required_env("MYSQL_DATABASE")
     MYSQL_HOST = utils_obj.get_required_env("MYSQL_HOST")
     MYSQL_PORT = utils_obj.get_required_env("MYSQL_PORT")
@@ -51,6 +53,11 @@ def main() -> None:
     S3_SAVEPATH = args.savepath
     undesired_column = args.undesired_column
 
+    ICEBERG_CATALOG_URI = utils_obj.get_required_env("ICEBERG_CATALOG_URI")
+    ICEBERG_CATALOG_USER = utils_obj.get_required_env("ICEBERG_CATALOG_USER")
+    ICEBERG_CATALOG_PASSWORD = utils_obj.get_required_env("ICEBERG_CATALOG_PASSWORD")
+    ICEBERG_CATALOG_WAREHOUSE = utils_obj.get_required_env("ICEBERG_CATALOG_WAREHOUSE")
+
     TABLES = [
     "course_overviews_courseoverview", 
     "student_courseenrollment", 
@@ -63,8 +70,18 @@ def main() -> None:
     "grades_persistentcoursegrade",
     "auth_user"
     ]
+    icerberg_cfg = Config(
+        app_name="Full table ingestion",
+        s3_access_key=S3_ACCESS_KEY,
+        s3_endpoint=S3_ENDPOINT,
+        s3_secret_key=S3_SECRET_KEY,
+        iceberg_catalog_uri=ICEBERG_CATALOG_URI,
+        iceberg_catalog_user=ICEBERG_CATALOG_USER,
+        iceberg_catalog_password=ICEBERG_CATALOG_PASSWORD,
+        iceberg_catalog_warehouse=ICEBERG_CATALOG_WAREHOUSE
 
-    spark = utils_obj.get_spark_session(S3_ACCESS_KEY=S3_ACCESS_KEY,S3_SECRET_KEY=S3_SECRET_KEY,S3_ENDPOINT=S3_ENDPOINT,app_name="Full table ingestion")
+    )
+    spark = utils_obj.get_iceberg_spark_session(cfg=icerberg_cfg)
     for table in TABLES:
 
         logging.info(f"getting table {table}")
