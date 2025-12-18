@@ -36,8 +36,8 @@ class Utils:
             .config("spark.hadoop.fs.s3.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
             .getOrCreate()
         return spark 
-    def get_delta_spark_session(self,S3_ACCESS_KEY: str,S3_SECRET_KEY: str , S3_ENDPOINT: str) -> SparkSession:
     
+    def get_delta_spark_session(self,S3_ACCESS_KEY: str,S3_SECRET_KEY: str , S3_ENDPOINT: str) -> SparkSession:
         spark = SparkSession.builder \
             .appName("incremental_table_ingestion") \
             .config("spark.jars", 

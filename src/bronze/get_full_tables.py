@@ -1,5 +1,6 @@
 from pyspark.sql import SparkSession #type:ignore
 from pyspark.sql import DataFrame #type:ignore
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType, FloatType #type:ignore
 import pyspark.sql.functions as F #type:ignore
 import argparse
 import os
