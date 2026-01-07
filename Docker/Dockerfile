@@ -8,20 +8,19 @@ ENV HOME=/home/spark \
     PYSPARK_DRIVER_PYTHON=/usr/local/bin/python3.11 \
     PYTHONPATH="${SPARK_HOME}/python"
 
-# PySpark + JupyterLab + libs
-RUN pip install --no-cache-dir \
-    jupyterlab==4.2.5
+USER root
 
-# Dirs Jupyter + notebooks
-RUN mkdir -p "${JUPYTER_DIR}" \
-    && mkdir -p "${HOME}/.local/share/jupyter/runtime" \
-    && mkdir -p "${HOME}/.jupyter" \
-    && chown -R spark:spark /home/spark /opt/spark
+# garante dirs + permissões antes de instalar
+RUN mkdir -p "${JUPYTER_DIR}" /home/spark \
+    && chown -R 185:185 /home/spark /opt/spark
+
+# PySpark + JupyterLab + libs
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir jupyterlab==4.2.5
 
 USER 185
 WORKDIR ${JUPYTER_DIR}
 
 EXPOSE 8888
 
-# Default: start JupyterLab (K8s manifest pode override se quiser usar só spark-submit)
 ENTRYPOINT ["bash","-lc","jupyter lab --ip=0.0.0.0 --port=${JUPYTER_PORT} --no-browser --ServerApp.root_dir=${JUPYTER_DIR} --ServerApp.token='' --ServerApp.password=''"]
