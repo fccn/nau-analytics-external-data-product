@@ -1,8 +1,13 @@
 from pyspark.sql import SparkSession #type:ignore
+from pyspark.sql import DataFrame #type:ignore
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType, FloatType #type:ignore
 import pyspark.sql.functions as F #type:ignore
 import argparse
 import os
 import logging
+from typing import List, Union, Optional,Tuple
+from utils.utils import Utils
+from utils.config import Config
 
 logging.basicConfig(
     level=logging.INFO,
@@ -11,6 +16,10 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
+
+utils_obj = Utils("dev")
+
+
 def get_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--savepath", type = str,required= True, help = "The S3 bucket intended for the data to be stored")
@@ -18,44 +27,37 @@ def get_args() -> argparse.Namespace:
     args = parser.parse_args()
     return args
 
-def get_spark_session(S3_ACCESS_KEY: str,S3_SECRET_KEY: str , S3_ENDPOINT: str) -> SparkSession:
-    
-    spark = SparkSession.builder \
-        .appName("incremental_table_ingestion") \
-        .config("spark.jars", "/opt/spark/jars/hadoop-aws-3.3.4.jar,/opt/spark/jars/aws-java-sdk-bundle-1.12.375.jar,/opt/spark/jars/delta-spark_2.12-3.2.1.jar,/opt/spark/jars/delta-storage-3.2.1.jar,/opt/spark/jars/delta-kernel-api-3.2.1.jar,/opt/spark/jars/mysql-connector-j-8.3.0.jar") \
-        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")\
-        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")\
-        .config("spark.hadoop.fs.s3a.access.key", S3_ACCESS_KEY) \
-        .config("spark.hadoop.fs.s3a.secret.key", S3_SECRET_KEY) \
-        .config("spark.hadoop.fs.s3a.endpoint", S3_ENDPOINT) \
-        .config("spark.hadoop.fs.s3a.path.style.access", "true") \
-        .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
-        .getOrCreate()
-    return spark 
 
-###################################################################################
-#                           GET MYSQL CREDENTIALS                                 #
-###################################################################################
+def add_ingestion_metadata_column(df: DataFrame,table: str) -> DataFrame:
+    tmp_df = df.withColumn("ingestion_date", F.current_timestamp()).withColumn("source_name", F.lit(table))
+    return tmp_df
+
+def add_date_partition_columns(df: DataFrame,column_name:str) -> DataFrame:
+    df = df.withColumn("year", F.year(F.col(column_name)))\
+        .withColumn("month", F.month(F.col(column_name)))\
+        .withColumn("day",F.day(column_name))
+    return df
+
 def main() -> None:
-    MYSQL_DATABASE = os.getenv("MYSQL_DATABASE")
-    MYSQL_HOST = os.getenv("MYSQL_HOST")
-    MYSQL_PORT = os.getenv("MYSQL_PORT")
-    MYSQL_USER = os.getenv("MYSQL_USER")
-    MYSQL_SECRET = os.getenv("MYSQL_SECRET")
+
+    MYSQL_DATABASE = utils_obj.get_required_env("MYSQL_DATABASE")
+    MYSQL_HOST = utils_obj.get_required_env("MYSQL_HOST")
+    MYSQL_PORT = utils_obj.get_required_env("MYSQL_PORT")
+    MYSQL_USER = utils_obj.get_required_env("MYSQL_USER")
+    MYSQL_SECRET = utils_obj.get_required_env("MYSQL_SECRET")
     jdbc_url = f"jdbc:mysql://{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}"
 
-
-
-    ###################################################################################
-    #                           GET S3 CREDENTIALS                                    #
-    ###################################################################################
-    S3_ACCESS_KEY = str(os.getenv("S3_ACCESS_KEY"))
-    S3_SECRET_KEY = str(os.getenv("S3_SECRET_KEY"))
-    S3_ENDPOINT = str(os.getenv("S3_ENDPOINT"))
-
+    S3_ACCESS_KEY = utils_obj.get_required_env("S3_ACCESS_KEY")
+    S3_SECRET_KEY = utils_obj.get_required_env("S3_SECRET_KEY")
+    S3_ENDPOINT = utils_obj.get_required_env("S3_ENDPOINT")
     args = get_args()
     S3_SAVEPATH = args.savepath
     undesired_column = args.undesired_column
+
+    ICEBERG_CATALOG_URI = utils_obj.get_required_env("ICEBERG_CATALOG_URI")
+    ICEBERG_CATALOG_USER = utils_obj.get_required_env("ICEBERG_CATALOG_USER")
+    ICEBERG_CATALOG_PASSWORD = utils_obj.get_required_env("ICEBERG_CATALOG_PASSWORD")
+    ICEBERG_CATALOG_WAREHOUSE = utils_obj.get_required_env("ICEBERG_CATALOG_WAREHOUSE")
 
     TABLES = [
     "course_overviews_courseoverview", 
@@ -65,15 +67,26 @@ def main() -> None:
     "auth_userprofile",
     "student_userattribute",
     "organizations_organization",
+    "organizations_historicalorganization",
+    "grades_persistentcoursegrade",
     "auth_user"
     ]
+    icerberg_cfg = Config(
+        app_name="Full table ingestion",
+        s3_access_key=S3_ACCESS_KEY,
+        s3_endpoint=S3_ENDPOINT,
+        s3_secret_key=S3_SECRET_KEY,
+        iceberg_catalog_uri=ICEBERG_CATALOG_URI,
+        iceberg_catalog_user=ICEBERG_CATALOG_USER,
+        iceberg_catalog_password=ICEBERG_CATALOG_PASSWORD,
+        iceberg_catalog_warehouse=ICEBERG_CATALOG_WAREHOUSE
 
+    )
+    spark = utils_obj.get_iceberg_spark_session(cfg=icerberg_cfg)
     for table in TABLES:
 
         logging.info(f"getting table {table}")
         try:
-        
-            spark = get_spark_session(S3_ACCESS_KEY=S3_ACCESS_KEY,S3_SECRET_KEY=S3_SECRET_KEY,S3_ENDPOINT=S3_ENDPOINT)
 
             df = spark.read.format("jdbc") \
                 .option("url", jdbc_url) \
@@ -85,18 +98,21 @@ def main() -> None:
             if table == "auth_user":
                 df = df.drop(undesired_column)
 
-            df = df.withColumn("ingestion_date", F.current_timestamp()) \
-                   .withColumn("source_name", F.lit(table))
+            df = add_ingestion_metadata_column(df=df,table=table)
+            df = add_date_partition_columns(df,"ingestion_date")
             if table == "auth_user" and undesired_column and undesired_column in df.columns:
                 raise Exception("THE undesired column stills in the dataframe")
+            
             output_path = f"{S3_SAVEPATH}/{table}"
 
-            df.write.format("delta").mode("append").save(output_path)
+            df.write.format("iceberg").mode("append").partitionBy("year", "month","day").save(output_path)
 
             logging.info(f"Data saved as Delta table to {output_path}")
 
         except Exception as e:
             logging.error(f"Pipeline failed: {e}")
+            raise Exception(f"Pipeline fail {e}")
+    
     spark.stop()
 
 
