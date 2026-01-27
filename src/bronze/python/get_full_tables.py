@@ -5,6 +5,7 @@ import argparse
 import os
 import logging
 from typing import List, Union, Optional,Tuple
+import base64
 
 
 logging.basicConfig(
@@ -52,7 +53,7 @@ def main() -> None:
     ICEBERG_CATALOG_PASSWORD = get_required_env("ICEBERG_CATALOG_PASSWORD")
     ICEBERG_CATALOG_WAREHOUSE = get_required_env("ICEBERG_CATALOG_WAREHOUSE")
     ICEBERG_CATALOG_URI = f"jdbc:mysql://{ICEBERG_CATALOG_HOST}:{ICEBERG_CATALOG_PORT}/{ICEBERG_CATALOG_NAME}"
-
+    ICEBERG_CATALOG_PASSWORD = base64.b64decode(ICEBERG_CATALOG_PASSWORD).decode()
     TABLES = [
     "course_overviews_courseoverview", 
     "student_courseenrollment", 
