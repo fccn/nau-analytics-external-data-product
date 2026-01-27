@@ -1,5 +1,6 @@
-from datetime import datetime
+from datetime import datetime,date, timedelta
 from pyspark.sql import SparkSession # type: ignore
+from pyspark.sql import DataFrame #type:ignore
 import pyspark.sql.functions as F # type: ignore
 import pyspark.sql.types as T # type: ignore
 import argparse
@@ -16,6 +17,12 @@ logging.basicConfig(
 )
 
 
+def get_required_env(env_name:str) -> str:
+    env_value = os.getenv(env_name)
+    if env_value is None:
+        raise ValueError(f"Environment variable {env_name} is not set")
+    return env_value
+
 
 
 def get_args() -> argparse.Namespace:
@@ -26,6 +33,18 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--first_ingestion_flag",type = int,default=0,help="flag to indicate if it is the first ingestion on regular ingestion")
     args = parser.parse_args()
     return args
+
+
+def get_metadata(metadatapath: str, spark: SparkSession, table:str) -> str | bool:
+    metadatapath = f"{metadatapath}/{table}/last_updated_date"
+    customSchema = T.StructType([      
+        T.StructField("table_name", T.StringType(), True),
+        T.StructField("last_date", T.StringType(), True)
+    ])
+    row = spark.read.csv(metadatapath,schema=customSchema).filter( F.col("table_name") == table).first()
+    if row is None or row["last_date"] is None:
+        return False
+    return str(row["last_date"])
 
 def update_metadata(metadatapath: str ,spark: SparkSession,table:str,last_date:str) -> bool:
     try:
@@ -63,83 +82,65 @@ def get_spark_session(S3_ACCESS_KEY: str,S3_SECRET_KEY: str , S3_ENDPOINT: str) 
 
 
 
+def add_ingestion_metadata_column(df: DataFrame,table: str) -> DataFrame:
+    tmp_df = df.withColumn("ingestion_date", F.current_timestamp()).withColumn("source_name", F.lit(table))
+    return tmp_df
 
+def add_date_partition_columns(df: DataFrame,column_name:str) -> DataFrame:
+    df = df.withColumn("year", F.year(F.col(column_name)))\
+        .withColumn("month", F.month(F.col(column_name)))
+    return df
 
+def get_all_dates_until_today(start_date: date):
+    months = []
+    year, month = start_date.year, start_date.month
+    today = date.today()
+
+    while (year < today.year) or (year == today.year and month <= today.month):
+        months.append(date(year, month,1))
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
+
+    return months
 
 def full_initial_ingestion(spark: SparkSession, table: str, savepath: str, jdbc_url:str, MYSQL_USER:str, MYSQL_SECRET:str) -> Tuple[bool, str]:
-    years = [i for i in range(2019,2100)]
-    months = [i for i in range(1,13)]
+    processing_dates = get_all_dates_until_today(date(2020,1,1))
     current_year = datetime.now().year
     current_month = datetime.now().month
     path = f"{savepath}/{table}"
     
-    for year in years:
-        for month in months:
-            
-            if (year == 2019 and month ==1):
-                query = f"(SELECT * FROM {table} WHERE YEAR(created) = {year} AND MONTH(created) = {month}) AS limited_table"
-                logging.info(query)
-                df = spark.read.format("jdbc") \
-                    .option("url", jdbc_url) \
-                    .option("user", MYSQL_USER) \
-                    .option("password", MYSQL_SECRET) \
-                    .option("driver", "com.mysql.cj.jdbc.Driver") \
-                    .option("dbtable", query) \
-                    .load() 
+    for d in processing_dates:
+        query = f"(SELECT * FROM {table} WHERE YEAR(created) = {d.year} AND MONTH(created) = {d.month}) AS limited_table"
+        logging.info(query)
+        df = spark.read.format("jdbc") \
+            .option("url", jdbc_url) \
+            .option("user", MYSQL_USER) \
+            .option("password", MYSQL_SECRET) \
+            .option("driver", "com.mysql.cj.jdbc.Driver") \
+            .option("dbtable", query) \
+            .load() 
+        df = df.withColumn("created", F.date_format("created", "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"))
+        df = add_date_partition_columns(df=df, column_name="created")
+        df = add_ingestion_metadata_column(df=df,table=table)
+                
 
-                df = df.withColumn("created", F.date_format("created", "yyyy-MM-dd'T'HH:mm:ss.SSSSSS")) \
-                       .withColumn("year", F.year(F.col("created"))) \
-                       .withColumn("month", F.month(F.col("created")))
-                
-                df = df.withColumn("ingestion_date", F.current_timestamp()) \
-                   .withColumn("source_name", F.lit(table))
-                
-                df.write.format("delta") \
-                    .mode("overwrite") \
-                    .partitionBy("year", "month") \
-                    .save(path)
-                continue
-            
-            if (year > current_year) or (year == current_year and month > current_month):
-                break 
-            else:
-                
-                query = f"(SELECT * FROM {table} WHERE YEAR(created) = {year} AND MONTH(created) = {month}) AS limited_table"
-                logging.info(query)
-                new_df = spark.read.format("jdbc") \
-                    .option("url", jdbc_url) \
-                    .option("user", MYSQL_USER) \
-                    .option("password", MYSQL_SECRET) \
-                    .option("driver", "com.mysql.cj.jdbc.Driver") \
-                    .option("dbtable", query) \
-                    .load()
-                if (year == current_year and month == current_month):
-                    last_update =  datetime.now().isoformat()
-                incremental_df = new_df.withColumn("created", F.date_format("created", "yyyy-MM-dd'T'HH:mm:ss.SSSSSS")) \
-                                       .withColumn("year", F.year(F.col("created"))) \
-                                       .withColumn("month", F.month(F.col("created")))
-                
-                incremental_df = incremental_df.withColumn("ingestion_date", F.current_timestamp()).withColumn("source_name", F.lit(table))
-
-                # Append new partitions directly
-                incremental_df.write.format("delta").mode("append").partitionBy("year", "month").save(path)
+        if d == processing_dates[-1]:
+            last_update =  datetime.now().isoformat()
+            logging.info(f"Last ingestion from full tables: {d}")
+        
+        df.write.format("delta").mode("append").partitionBy("year", "month").save(path)
     return (True, last_update)
 
-def get_metadata(metadatapath: str, spark: SparkSession, table:str) -> str | bool:
-    metadatapath = f"{metadatapath}/{table}/last_updated_date"
-    customSchema = T.StructType([      
-        T.StructField("table_name", T.StringType(), True),
-        T.StructField("last_date", T.StringType(), True)
-    ])
-    row = spark.read.csv(metadatapath,schema=customSchema).filter( F.col("table_name") == table).first()
-    if row is None or row["last_date"] is None:
-        return False
-    return str(row["last_date"])
 
 def delta_load(spark: SparkSession, jdbc_url:str, MYSQL_USER:str, MYSQL_SECRET:str,last_updated:str,table:str,savepath: str) -> Tuple[bool, str]:
+    
     path = f"{savepath}/{table}"
     query = f"(SELECT * FROM {table} WHERE created >= '{last_updated}') AS limited_table"
+    
     logging.info(query)            
+    
     new_df = spark.read.format("jdbc") \
         .option("url", jdbc_url) \
         .option("user", MYSQL_USER) \
@@ -147,12 +148,13 @@ def delta_load(spark: SparkSession, jdbc_url:str, MYSQL_USER:str, MYSQL_SECRET:s
         .option("driver", "com.mysql.cj.jdbc.Driver") \
         .option("dbtable", query) \
         .load()
-    last_update =  datetime.now().isoformat()
-    incremental_df = new_df.withColumn("created", F.date_format("created", "yyyy-MM-dd'T'HH:mm:ss.SSSSSS")) \
-                           .withColumn("year", F.year(F.col("created"))) \
-                           .withColumn("month", F.month(F.col("created")))
     
-    incremental_df = incremental_df.withColumn("ingestion_date", F.current_timestamp()).withColumn("source_name", F.lit(table))
+    last_update =  datetime.now().isoformat()
+    incremental_df = new_df.withColumn("created", F.date_format("created", "yyyy-MM-dd'T'HH:mm:ss.SSSSSS")) 
+    incremental_df = add_date_partition_columns(df=incremental_df,column_name="created")
+    incremental_df = add_ingestion_metadata_column(df=incremental_df,table=table)
+    
+    #incremental_df = incremental_df.withColumn("ingestion_date", F.current_timestamp()).withColumn("source_name", F.lit(table))
 
                 # Append new partitions directly
     incremental_df.write.format("delta").mode("append").partitionBy("year", "month").save(path)    
@@ -162,36 +164,43 @@ def delta_load(spark: SparkSession, jdbc_url:str, MYSQL_USER:str, MYSQL_SECRET:s
 
 def main() -> None:
 
-    MYSQL_DATABASE = os.getenv("MYSQL_DATABASE")
-    MYSQL_HOST = os.getenv("MYSQL_HOST")
-    MYSQL_PORT = os.getenv("MYSQL_PORT")
-    MYSQL_USER = str(os.getenv("MYSQL_USER"))
-    MYSQL_SECRET = str(os.getenv("MYSQL_SECRET"))
+    MYSQL_DATABASE = get_required_env("MYSQL_DATABASE")
+    MYSQL_HOST = get_required_env("MYSQL_HOST")
+    MYSQL_PORT = get_required_env("MYSQL_PORT")
+    MYSQL_USER = get_required_env("MYSQL_USER")
+    MYSQL_SECRET = get_required_env("MYSQL_SECRET")
     jdbc_url = f"jdbc:mysql://{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}"
 
-    S3_ACCESS_KEY = str(os.getenv("S3_ACCESS_KEY"))
-    S3_SECRET_KEY = str(os.getenv("S3_SECRET_KEY"))
-    S3_ENDPOINT = str(os.getenv("S3_ENDPOINT"))
-
+    S3_ACCESS_KEY = get_required_env("S3_ACCESS_KEY")
+    S3_SECRET_KEY = get_required_env("S3_SECRET_KEY")
+    S3_ENDPOINT = get_required_env("S3_ENDPOINT")
+    
     args = get_args()
     savepath = args.savepath
     metadata = args.metadatapath
     is_full_ingestion_flag = args.first_ingestion_flag
     table = args.table
+
+
     spark = get_spark_session(S3_ACCESS_KEY,S3_SECRET_KEY,S3_ENDPOINT)
+    
     if is_full_ingestion_flag == 1:
         result = full_initial_ingestion(spark,table,savepath,jdbc_url,MYSQL_USER,MYSQL_SECRET)
         logging.info(result)
         if result[0]:
             update_metadata(metadatapath=metadata,spark=spark,table=table,last_date=result[1])
+    
     if is_full_ingestion_flag == 0:
         last_date = get_metadata(metadatapath=metadata,spark=spark,table=table)
         if last_date == False:
             raise Exception("No date Found")
+        
         last_date = str(last_date)
         result = delta_load(spark=spark,jdbc_url=jdbc_url,MYSQL_USER=MYSQL_USER,MYSQL_SECRET=MYSQL_SECRET,last_updated=last_date,table=table,savepath=savepath)
+        
         if result[0]:
              update_metadata(metadatapath=metadata,spark=spark,table=table,last_date=result[1])
+    
     spark.stop()
 
 if __name__=="__main__":
