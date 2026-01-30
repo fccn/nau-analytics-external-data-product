@@ -1,5 +1,6 @@
 from datetime import datetime,date, timedelta
-from pyspark.sql import SparkSession # type: ignore
+from nau_analytics_data_product_utils_lib import Config,get_required_env,get_iceberg_spark_session #type: ignore
+from pyspark.sql import SparkSession #type: ignore 
 from pyspark.sql import DataFrame #type:ignore
 import pyspark.sql.functions as F # type: ignore
 import pyspark.sql.types as T # type: ignore
@@ -7,6 +8,7 @@ import argparse
 import logging
 import os
 from typing import List, Union, Optional,Tuple
+import base64
 
 logging.basicConfig(
     level=logging.INFO,
@@ -17,17 +19,11 @@ logging.basicConfig(
 )
 
 
-def get_required_env(env_name:str) -> str:
-    env_value = os.getenv(env_name)
-    if env_value is None:
-        raise ValueError(f"Environment variable {env_name} is not set")
-    return env_value
 
 
 
 def get_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--savepath", type = str,required= True, help = "The S3 bucket intended for the data to be stored")
     parser.add_argument("--metadatapath", type = str, required = True, help ="The S3 bucket that contains stores the metada for the process")
     parser.add_argument("--table", type = str, required = True, help ="The S3 bucket that contains stores the metada for the process")
     parser.add_argument("--first_ingestion_flag",type = int,default=0,help="flag to indicate if it is the first ingestion on regular ingestion")
@@ -61,35 +57,10 @@ def update_metadata(metadatapath: str ,spark: SparkSession,table:str,last_date:s
         return False
     
 
-
-def get_spark_session(S3_ACCESS_KEY: str,S3_SECRET_KEY: str , S3_ENDPOINT: str) -> SparkSession:
-    
-    spark = SparkSession.builder \
-        .appName("incremental_table_ingestion") \
-        .config("spark.jars", "/opt/spark/jars/hadoop-aws-3.3.4.jar,/opt/spark/jars/aws-java-sdk-bundle-1.12.375.jar,/opt/spark/jars/delta-spark_2.12-3.2.1.jar,/opt/spark/jars/delta-storage-3.2.1.jar,/opt/spark/jars/delta-kernel-api-3.2.1.jar,/opt/spark/jars/mysql-connector-j-8.3.0.jar") \
-        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")\
-        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")\
-        .config("spark.hadoop.fs.s3a.access.key", S3_ACCESS_KEY) \
-        .config("spark.hadoop.fs.s3a.secret.key", S3_SECRET_KEY) \
-        .config("spark.hadoop.fs.s3a.endpoint", S3_ENDPOINT) \
-        .config("spark.hadoop.fs.s3a.path.style.access", "true") \
-        .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
-        .getOrCreate()
-    return spark 
-
-
-
-
-
-
 def add_ingestion_metadata_column(df: DataFrame,table: str) -> DataFrame:
     tmp_df = df.withColumn("ingestion_date", F.current_timestamp()).withColumn("source_name", F.lit(table))
     return tmp_df
 
-def add_date_partition_columns(df: DataFrame,column_name:str) -> DataFrame:
-    df = df.withColumn("year", F.year(F.col(column_name)))\
-        .withColumn("month", F.month(F.col(column_name)))
-    return df
 
 def get_all_dates_until_today(start_date: date):
     months = []
@@ -105,11 +76,11 @@ def get_all_dates_until_today(start_date: date):
 
     return months
 
-def full_initial_ingestion(spark: SparkSession, table: str, savepath: str, jdbc_url:str, MYSQL_USER:str, MYSQL_SECRET:str) -> Tuple[bool, str]:
+def full_initial_ingestion(spark: SparkSession, table: str, jdbc_url:str, MYSQL_USER:str, MYSQL_SECRET:str) -> Tuple[bool, str]:
     processing_dates = get_all_dates_until_today(date(2020,1,1))
     current_year = datetime.now().year
     current_month = datetime.now().month
-    path = f"{savepath}/{table}"
+
     
     for d in processing_dates:
         query = f"(SELECT * FROM {table} WHERE YEAR(created) = {d.year} AND MONTH(created) = {d.month}) AS limited_table"
@@ -122,21 +93,19 @@ def full_initial_ingestion(spark: SparkSession, table: str, savepath: str, jdbc_
             .option("dbtable", query) \
             .load() 
         df = df.withColumn("created", F.date_format("created", "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"))
-        df = add_date_partition_columns(df=df, column_name="created")
         df = add_ingestion_metadata_column(df=df,table=table)
                 
 
         if d == processing_dates[-1]:
             last_update =  datetime.now().isoformat()
             logging.info(f"Last ingestion from full tables: {d}")
-        
-        df.write.format("delta").mode("append").partitionBy("year", "month").save(path)
+        saveTale = f"bronze_local.entidades.{table}"
+        df.write.format("iceberg").mode("append").saveAsTable(saveTale)
     return (True, last_update)
 
 
-def delta_load(spark: SparkSession, jdbc_url:str, MYSQL_USER:str, MYSQL_SECRET:str,last_updated:str,table:str,savepath: str) -> Tuple[bool, str]:
+def delta_load(spark: SparkSession, jdbc_url:str, MYSQL_USER:str, MYSQL_SECRET:str,last_updated:str,table:str) -> Tuple[bool, str]:
     
-    path = f"{savepath}/{table}"
     query = f"(SELECT * FROM {table} WHERE created >= '{last_updated}') AS limited_table"
     
     logging.info(query)            
@@ -151,13 +120,9 @@ def delta_load(spark: SparkSession, jdbc_url:str, MYSQL_USER:str, MYSQL_SECRET:s
     
     last_update =  datetime.now().isoformat()
     incremental_df = new_df.withColumn("created", F.date_format("created", "yyyy-MM-dd'T'HH:mm:ss.SSSSSS")) 
-    incremental_df = add_date_partition_columns(df=incremental_df,column_name="created")
     incremental_df = add_ingestion_metadata_column(df=incremental_df,table=table)
-    
-    #incremental_df = incremental_df.withColumn("ingestion_date", F.current_timestamp()).withColumn("source_name", F.lit(table))
-
-                # Append new partitions directly
-    incremental_df.write.format("delta").mode("append").partitionBy("year", "month").save(path)    
+    saveTale = f"bronze_local.entidades.{table}"
+    incremental_df.write.format("iceberg").mode("append").saveAsTable(saveTale)
     
     return (True,last_update)
 
@@ -175,17 +140,34 @@ def main() -> None:
     S3_SECRET_KEY = get_required_env("S3_SECRET_KEY")
     S3_ENDPOINT = get_required_env("S3_ENDPOINT")
     
+    ICEBERG_CATALOG_HOST = get_required_env("ICEBERG_CATALOG_HOST")
+    ICEBERG_CATALOG_PORT = get_required_env("ICEBERG_CATALOG_PORT")
+    ICEBERG_CATALOG_NAME = get_required_env("ICEBERG_CATALOG_NAME")
+    ICEBERG_CATALOG_USER = get_required_env("ICEBERG_CATALOG_USER")
+    ICEBERG_CATALOG_PASSWORD = get_required_env("ICEBERG_CATALOG_PASSWORD")
+    ICEBERG_CATALOG_WAREHOUSE = get_required_env("ICEBERG_CATALOG_WAREHOUSE")
+    ICEBERG_CATALOG_URI = f"jdbc:mysql://{ICEBERG_CATALOG_HOST}:{ICEBERG_CATALOG_PORT}/{ICEBERG_CATALOG_NAME}"
+    ICEBERG_CATALOG_PASSWORD = base64.b64decode(ICEBERG_CATALOG_PASSWORD).decode()
     args = get_args()
-    savepath = args.savepath
+    table = args.table
     metadata = args.metadatapath
     is_full_ingestion_flag = args.first_ingestion_flag
-    table = args.table
 
+    icerberg_cfg = Config(
+        app_name="Full table ingestion",
+        s3_access_key=S3_ACCESS_KEY,
+        s3_endpoint=S3_ENDPOINT,
+        s3_secret_key=S3_SECRET_KEY,
+        iceberg_catalog_uri=ICEBERG_CATALOG_URI,
+        iceberg_catalog_user=ICEBERG_CATALOG_USER,
+        iceberg_catalog_password=ICEBERG_CATALOG_PASSWORD,
+        iceberg_catalog_warehouse=ICEBERG_CATALOG_WAREHOUSE
 
-    spark = get_spark_session(S3_ACCESS_KEY,S3_SECRET_KEY,S3_ENDPOINT)
+    )
+    spark = get_iceberg_spark_session(cfg=icerberg_cfg)
     
     if is_full_ingestion_flag == 1:
-        result = full_initial_ingestion(spark,table,savepath,jdbc_url,MYSQL_USER,MYSQL_SECRET)
+        result = full_initial_ingestion(spark,table,jdbc_url,MYSQL_USER,MYSQL_SECRET)
         logging.info(result)
         if result[0]:
             update_metadata(metadatapath=metadata,spark=spark,table=table,last_date=result[1])
@@ -196,7 +178,7 @@ def main() -> None:
             raise Exception("No date Found")
         
         last_date = str(last_date)
-        result = delta_load(spark=spark,jdbc_url=jdbc_url,MYSQL_USER=MYSQL_USER,MYSQL_SECRET=MYSQL_SECRET,last_updated=last_date,table=table,savepath=savepath)
+        result = delta_load(spark=spark,jdbc_url=jdbc_url,MYSQL_USER=MYSQL_USER,MYSQL_SECRET=MYSQL_SECRET,last_updated=last_date,table=table)
         
         if result[0]:
              update_metadata(metadatapath=metadata,spark=spark,table=table,last_date=result[1])
