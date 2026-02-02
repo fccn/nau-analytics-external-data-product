@@ -52,6 +52,7 @@ def main() -> None:
     ICEBERG_CATALOG_USER = get_required_env("ICEBERG_CATALOG_USER")
     ICEBERG_CATALOG_PASSWORD = get_required_env("ICEBERG_CATALOG_PASSWORD")
     ICEBERG_CATALOG_WAREHOUSE = get_required_env("ICEBERG_CATALOG_WAREHOUSE")
+    ICEBERG_CATALOG_NAME = get_required_env("ICEBERG_CATALOG_NAME")
     ICEBERG_CATALOG_URI = f"jdbc:mysql://{ICEBERG_CATALOG_HOST}:{ICEBERG_CATALOG_PORT}/{ICEBERG_CATALOG_NAME}"
     ICEBERG_CATALOG_PASSWORD = base64.b64decode(ICEBERG_CATALOG_PASSWORD).decode()
     TABLES = [
@@ -74,7 +75,8 @@ def main() -> None:
         iceberg_catalog_uri=ICEBERG_CATALOG_URI,
         iceberg_catalog_user=ICEBERG_CATALOG_USER,
         iceberg_catalog_password=ICEBERG_CATALOG_PASSWORD,
-        iceberg_catalog_warehouse=ICEBERG_CATALOG_WAREHOUSE
+        iceberg_catalog_warehouse=ICEBERG_CATALOG_WAREHOUSE,
+        iceberg_catalog_name = ICEBERG_CATALOG_NAME
 
     )
     spark = get_iceberg_spark_session(cfg=icerberg_cfg)
