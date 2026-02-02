@@ -120,7 +120,7 @@ def delta_load(spark: SparkSession, jdbc_url:str, MYSQL_USER:str, MYSQL_SECRET:s
     
     last_update =  datetime.now().isoformat()
     #incremental_df = new_df.withColumn("created", F.date_format("created", "yyyy-MM-dd'T'HH:mm:ss.SSSSSS")) 
-    incremental_df = add_ingestion_metadata_column(df=incremental_df,table=table)
+    incremental_df = add_ingestion_metadata_column(df=new_df,table=table)
     saveTale = f"bronze_local.entidades.{table}"
     incremental_df.write.format("iceberg").mode("append").saveAsTable(saveTale)
     
