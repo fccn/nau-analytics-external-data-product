@@ -92,7 +92,7 @@ def full_initial_ingestion(spark: SparkSession, table: str, jdbc_url:str, MYSQL_
             .option("driver", "com.mysql.cj.jdbc.Driver") \
             .option("dbtable", query) \
             .load() 
-        df = df.withColumn("created", F.date_format("created", "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"))
+        #df = df.withColumn("created", F.date_format("created", "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"))
         df = add_ingestion_metadata_column(df=df,table=table)
                 
 
