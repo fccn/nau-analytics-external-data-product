@@ -172,7 +172,9 @@ def main() -> None:
         result = full_initial_ingestion(spark,table,jdbc_url,MYSQL_USER,MYSQL_SECRET)
         logging.info(result)
         if result[0]:
-            update_metadata(metadatapath=metadata,spark=spark,table=table,last_date=result[1])
+            data_updated = update_metadata(metadatapath=metadata,spark=spark,table=table,last_date=result[1])
+            if data_updated == False:
+                raise Exception("Failed to update metadata on initial ingestion")
     
     if is_full_ingestion_flag == 0:
         last_date = get_metadata(metadatapath=metadata,spark=spark,table=table)
