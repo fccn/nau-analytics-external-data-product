@@ -31,7 +31,7 @@ query = ("""
     download_uuid ,
     download_url ,
     grade ,
-    key ,
+    `key` ,
     distinction ,
     status ,
     mode ,
@@ -41,7 +41,7 @@ query = ("""
     error_reason ,
     user_id 
 FROM 
-    certificates_generatedcertificate ) AS TABLE
+    certificates_generatedcertificate ) AS T
 
 
 """)
