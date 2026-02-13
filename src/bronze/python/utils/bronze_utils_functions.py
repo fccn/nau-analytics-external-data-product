@@ -4,8 +4,8 @@ from typing import List, Union, Optional,Tuple
 from pyspark.sql import SparkSession #type: ignore
 
 
-def add_ingestion_metadata_column(df: DataFrame,table: str,) -> DataFrame:
-    tmp_df = df.withColumn("ingestion_date", F.current_timestamp()).withColumn("source_name", F.lit(table))
+def add_ingestion_metadata_column(df: DataFrame,table: str,current_timestamp:str) -> DataFrame:
+    tmp_df = df.withColumn("ingestion_date", F.lit(current_timestamp)).withColumn("source_name", F.lit(table))
     return tmp_df
 
 def read_data_from_sql(spark_session: SparkSession,query:str,jdbc_url:str,MYSQL_USER:str,MYSQL_SECRET:str) -> DataFrame:

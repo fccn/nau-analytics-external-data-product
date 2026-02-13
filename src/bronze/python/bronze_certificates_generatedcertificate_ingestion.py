@@ -51,7 +51,7 @@ def main():
     """)
     current_timestamp = spark.sql("SELECT current_timestamp() as c").first()["c"]
     src_df = read_data_from_sql(spark_session=spark,query=query,jdbc_url=jdbc_url,MYSQL_USER=MYSQL_USER,MYSQL_SECRET=MYSQL_SECRET)
-    df = add_ingestion_metadata_column(df=src_df,table=table)
+    df = add_ingestion_metadata_column(df=src_df,table=table,current_timestamp=current_timestamp)
     saveTable = f"bronze_local.entidades.{table}"
     df.write.format("iceberg").mode("append").saveAsTable(saveTable)
     nr = validate_ingestion_values(spark_session=spark,src_table_df=df,table_name=table)
