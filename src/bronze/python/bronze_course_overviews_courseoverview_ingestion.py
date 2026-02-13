@@ -27,7 +27,6 @@ def main():
     start_date = get_max_timestamp_for_table(spark_session=spark,table_name=table)
     query = (F"""
     (
-        SELECT
 SELECT
     id,
     created,
