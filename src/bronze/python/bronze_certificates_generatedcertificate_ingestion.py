@@ -52,10 +52,10 @@ def main():
     current_timestamp = spark.sql("SELECT current_timestamp() as c").first()["c"]
     src_df = read_data_from_sql(spark_session=spark,query=query,jdbc_url=jdbc_url,MYSQL_USER=MYSQL_USER,MYSQL_SECRET=MYSQL_SECRET)
     df = add_ingestion_metadata_column(df=src_df,table=table)
-    nr = validate_ingestion_values(spark_session=spark,src_table_df=df,table_name=table)
-    update_ctrl_table(spark_session=spark,table_name=table,current_timestamp=current_timestamp,number_of_records=nr)
     saveTable = f"bronze_local.entidades.{table}"
     df.write.format("iceberg").mode("append").saveAsTable(saveTable)
+    nr = validate_ingestion_values(spark_session=spark,src_table_df=df,table_name=table)
+    update_ctrl_table(spark_session=spark,table_name=table,current_timestamp=current_timestamp,number_of_records=nr)
 
 if __name__ == "__main__":
     main()
