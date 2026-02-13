@@ -46,8 +46,8 @@ def main():
     FROM 
         certificates_generatedcertificate 
     WHERE 
-        created_date >={start_date} OR modified_date >={start_date}
-    ) AS T
+        created_date >='{start_date}' OR modified_date >='{start_date}'
+    ) AS T1
     """)
     current_timestamp = spark.sql("SELECT current_timestamp() as c").first()["c"]
     src_df = read_data_from_sql(spark_session=spark,query=query,jdbc_url=jdbc_url,MYSQL_USER=MYSQL_USER,MYSQL_SECRET=MYSQL_SECRET)
