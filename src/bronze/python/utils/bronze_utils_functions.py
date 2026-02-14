@@ -35,6 +35,7 @@ def get_max_timestamp_for_table(spark_session: SparkSession, table_name:str) -> 
     except Exception:
         raise ValueError("last execution ts not found on table")
     return START_DATE
+
 def validate_ingestion_values(spark_session:SparkSession,src_table_df: DataFrame,table_name:str) -> int:
         src_count = src_table_df.count()
         tgt_count = spark_session.sql(f"SELECT DISTINCT id FROM bronze_local.entidades.{table_name}").count()
