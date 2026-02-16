@@ -32,7 +32,7 @@ def main():
     FROM 
         grades_persistentcoursegrade 
     WHERE 
-        created_date >='{start_date}' OR modified_date >='{start_date}'
+        created >='{start_date}' OR modified >='{start_date}'
     ) AS T1
     """)
     current_timestamp = spark.sql("SELECT current_timestamp() as c").first()["c"]
