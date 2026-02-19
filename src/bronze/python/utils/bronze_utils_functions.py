@@ -1,4 +1,4 @@
-from pyspark.sql import DataFrame #type:ignore
+from pyspark.sql import DataFrame,Window #type:ignore
 import pyspark.sql.functions as F #type:ignore
 from typing import List, Union, Optional,Tuple
 from pyspark.sql import SparkSession #type: ignore
@@ -44,3 +44,21 @@ def validate_ingestion_values(spark_session:SparkSession,src_table_df: DataFrame
                 f"Count mismatch! Source = {src_count}, Target = {tgt_count}. Aborting pipeline."
             )
         return tgt_count
+
+def get_delta_dataframe(tgt_table: DataFrame,src_table_df :DataFrame) -> DataFrame:
+    w = Window.partitionBy("id").orderBy(F.col("ingestion_date").desc())
+    tgt_dedup = (
+        tgt_table.withColumn("rn", F.row_number().over(w))
+                 .where(F.col("rn") == 1)
+                 .drop("rn")
+    )
+
+    # Final dataframe with only new or updated records from the source table
+    df_delta = (
+        src_table_df.alias("s")
+        .join(tgt_dedup.alias("t"), on=F.col("s.id") == F.col("t.id"), how="left")
+        .where((F.col("t.id").isNull()) | (F.col("s.row_hash") != F.col("t.row_hash")))
+        .select("s.*")
+    )
+
+    return df_delta
