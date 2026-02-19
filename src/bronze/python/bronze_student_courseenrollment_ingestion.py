@@ -41,7 +41,7 @@ def main():
             created,
             is_active, 
             mode, 
-            user_id, 
+            user_id 
         )
     ) AS row_hash
     FROM 
