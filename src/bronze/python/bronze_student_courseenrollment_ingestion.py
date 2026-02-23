@@ -1,7 +1,7 @@
 from pyspark.sql import DataFrame #type:ignore
 import pyspark.sql.functions as F #type:ignore
 from nau_analytics_data_product_utils_lib import start_iceberg_session,get_required_env #type: ignore
-from utils.bronze_utils_functions import add_ingestion_metadata_column,read_data_from_sql,update_ctrl_table,get_max_timestamp_for_table,validate_ingestion_values,get_delta_dataframe
+from utils.bronze_utils_functions import add_ingestion_metadata_column,read_data_from_sql,update_ctrl_table,get_max_timestamp_for_table,validate_table_that_delete_lines,get_delta_dataframe
 import logging
 
 
@@ -56,7 +56,8 @@ def main():
     tgt_table = spark.sql(f"SELECT * FROM {saveTable}")
     df = get_delta_dataframe(src_table_df=src_df,tgt_table=tgt_table)
     df.write.format("iceberg").mode("append").saveAsTable(saveTable)
-    nr = validate_ingestion_values(spark_session=spark,src_table_df=src_df,table_name=table)
+    validate_table_that_delete_lines(src_table_df=src_df,tgt_table=tgt_table)
+    nr = tgt_table.count()
     logging.info(f"number of record in table {nr}")
     update_ctrl_table(spark_session=spark,table_name=table,current_timestamp=current_timestamp,number_of_records=nr)
 

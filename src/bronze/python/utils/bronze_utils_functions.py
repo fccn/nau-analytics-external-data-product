@@ -53,7 +53,6 @@ def get_delta_dataframe(tgt_table: DataFrame,src_table_df :DataFrame) -> DataFra
                  .drop("rn")
     )
 
-    # Final dataframe with only new or updated records from the source table
     df_delta = (
         src_table_df.alias("s")
         .join(tgt_dedup.alias("t"), on=F.col("s.id") == F.col("t.id"), how="left")
@@ -62,3 +61,14 @@ def get_delta_dataframe(tgt_table: DataFrame,src_table_df :DataFrame) -> DataFra
     )
 
     return df_delta
+
+def validate_table_that_delete_lines(tgt_table: DataFrame,src_table_df:DataFrame) -> bool:
+    tgt_table = tgt_table.select("id")
+    src_table_df = src_table_df.select("id")
+    result = src_table_df.join(tgt_table, on="id", how="left_anti").agg(F.countDistinct("id").alias("vl")).first()["vl"]
+    if result == 0:
+        return True
+    
+    raise Exception(
+                f"Id in src not found on tgt table. Aborting pipeline."
+    )
