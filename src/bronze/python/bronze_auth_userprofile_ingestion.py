@@ -18,6 +18,9 @@ def main():
     MYSQL_PORT = get_required_env("MYSQL_PORT")
     MYSQL_USER = get_required_env("MYSQL_USER")
     MYSQL_SECRET = get_required_env("MYSQL_SECRET")
+
+    ENVIRONMENT = get_required_env("ENVIRONMENT")
+    
     jdbc_url = f"jdbc:mysql://{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}" 
     spark = start_iceberg_session("ingestion_auth_user")
 
@@ -25,7 +28,7 @@ def main():
     src_schema = "edxapp"
     src_table_name = "auth_userprofile"
 
-    tgt_layer = "bronze_local"
+    tgt_layer = f"bronze{ENVIRONMENT}"
     tgt_pipeline = "entidades"
     tgt_table_name = "auth_userprofile"
 
