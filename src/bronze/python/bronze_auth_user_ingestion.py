@@ -49,7 +49,7 @@ def main():
         date_joined TIMESTAMP NOT NULL,
         row_hash STRING NOT NULL,
         ingestion_date TIMESTAMP NOT NULL,
-        source_name STRING NOT NULL,  
+        source_name STRING NOT NULL
     )
     USING ICEBERG
     """)
