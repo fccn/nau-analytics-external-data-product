@@ -89,7 +89,21 @@ def main():
     src_df = read_data_from_sql(spark_session=spark,query=src_table,jdbc_url=jdbc_url,MYSQL_USER=MYSQL_USER,MYSQL_SECRET=MYSQL_SECRET)
     src_df = add_ingestion_metadata_column(df=src_df,table=tgt_table_name,current_timestamp=current_timestamp)
     
-    tgt_table = spark.sql(f"SELECT * FROM {tgt_layer}.{tgt_pipeline}.{tgt_table_name}")
+    tgt_table = spark.sql(f"""
+        SELECT  id,
+                last_login,
+                is_superuser,
+                username,
+                first_name,
+                last_name,
+                email,
+                is_staff,
+                is_active,
+                date_joined,
+                ingestion_date,
+                row_hash
+        FROM  {tgt_layer}.{tgt_pipeline}.{tgt_table_name}
+    """)
     
     # We get the delta between the source and the target tables, to only insert or update the records 
     # that have changed in the source since the last ingestion, based on the hash of the fields that 
