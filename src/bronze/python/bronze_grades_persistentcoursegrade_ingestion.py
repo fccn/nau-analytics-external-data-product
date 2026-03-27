@@ -21,10 +21,30 @@ def main():
     MYSQL_PORT = get_required_env("MYSQL_PORT")
     MYSQL_USER = get_required_env("MYSQL_USER")
     MYSQL_SECRET = get_required_env("MYSQL_SECRET")
-    jdbc_url = f"jdbc:mysql://{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}" 
+    jdbc_url = f"jdbc:mysql://{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}"
+    ENV = get_required_env("ENVIRONMENT") 
     spark = start_iceberg_session("ingeston_grades_persistentcoursegrade")
     table = "grades_persistentcoursegrade"
     start_date = get_max_timestamp_for_table(spark_session=spark,table_name=table)
+    spark.sql(f"""
+            CREATE TABLE IF NOT EXISTS bronze{ENV}.entidades.{table}
+            id BIGINT NOT NULL,
+            user_id INT NOT NULL,
+            course_id STRING NOT NULL,
+            course_edited_timestamp TIMESTAMP,
+            course_version STRING NOT NULL,
+            grading_policy_hash STRING NOT NULL,
+            percent_grade DOUBLE NOT NULL,
+            letter_grade STRING NOT NULL,
+            passed_timestamp TIMESTAMP,
+            created TIMESTAMP NOT NULL,
+            modified TIMESTAMP NOT NULL,
+            ingestion_date TIMESTAMP NOT NULL,
+            source_name STRING NOT NULL
+        )
+        USING ICEBERG
+        PARTITIONED BY (days(ingestion_date));
+        """)
     query = (F"""
     (
     SELECT
@@ -39,7 +59,7 @@ def main():
     logging.info(f"executing query in db {query}")
     src_df = read_data_from_sql(spark_session=spark,query=query,jdbc_url=jdbc_url,MYSQL_USER=MYSQL_USER,MYSQL_SECRET=MYSQL_SECRET)
     df = add_ingestion_metadata_column(df=src_df,table=table,current_timestamp=current_timestamp)
-    saveTable = f"bronze_local.entidades.{table}"
+    saveTable = f"bronze{ENV}.entidades.{table}"
     df.write.format("iceberg").mode("append").saveAsTable(saveTable)
     scr_full_df = read_data_from_sql(spark_session=spark,query=table,jdbc_url=jdbc_url,MYSQL_USER=MYSQL_USER,MYSQL_SECRET=MYSQL_SECRET)
     nr = validate_ingestion_values(spark_session=spark,src_table_df=scr_full_df,table_name=table)
