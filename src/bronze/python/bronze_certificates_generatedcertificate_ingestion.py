@@ -25,7 +25,7 @@ def main():
     ENV = get_required_env("ENVIRONMENT")
     spark = start_iceberg_session("ingeston_certificates_generatedcertificate")
     table = "certificates_generatedcertificate"
-    start_date = get_max_timestamp_for_table(spark_session=spark,table_name=table)
+    start_date = get_max_timestamp_for_table(spark_session=spark,table_name=table,env=ENV)
     spark.sql(f"""
             CREATE TABLE IF NOT EXISTS bronze{ENV}.entidades.{table}(
                 id INT NOT NULL,
@@ -80,9 +80,9 @@ def main():
     saveTable = f"bronze{ENV}.entidades.{table}"
     df.write.format("iceberg").mode("append").saveAsTable(saveTable)
     scr_full_df = read_data_from_sql(spark_session=spark,query=table,jdbc_url=jdbc_url,MYSQL_USER=MYSQL_USER,MYSQL_SECRET=MYSQL_SECRET)
-    nr = validate_ingestion_values(spark_session=spark,src_table_df=scr_full_df,table_name=table)
+    nr = validate_ingestion_values(spark_session=spark,src_table_df=scr_full_df,table_name=table,env=ENV)
     logging.info(f"number of record in table {nr}")
-    update_ctrl_table(spark_session=spark,table_name=table,current_timestamp=current_timestamp,number_of_records=nr)
+    update_ctrl_table(spark_session=spark,table_name=table,current_timestamp=current_timestamp,number_of_records=nr,env=ENV)
 
 if __name__ == "__main__":
     main()

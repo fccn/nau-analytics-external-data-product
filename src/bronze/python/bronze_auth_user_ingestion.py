@@ -125,7 +125,7 @@ def main():
     validate_table_that_delete_lines(src_table_df=src_df,tgt_table=tgt_table)
 
     #Finally, we update the control table with the number of records that were inserted or updated in this run. 
-    update_ctrl_table(spark_session=spark,table_name=tgt_table_name,current_timestamp=current_timestamp,number_of_records=new_or_update_records)
+    update_ctrl_table(spark_session=spark,table_name=tgt_table_name,current_timestamp=current_timestamp,number_of_records=new_or_update_records,env=ENVIRONMENT)
 
 if __name__ == "__main__":
     main()

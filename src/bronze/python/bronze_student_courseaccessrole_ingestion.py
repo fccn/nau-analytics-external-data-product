@@ -22,9 +22,10 @@ def main():
     MYSQL_USER = get_required_env("MYSQL_USER")
     MYSQL_SECRET = get_required_env("MYSQL_SECRET")
     jdbc_url = f"jdbc:mysql://{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}" 
+    ENV = get_required_env("ENVIRONMENT") 
     spark = start_iceberg_session("ingeston_student_courseaccessrole")
     table = "student_courseaccessrole"
-    start_date = get_max_timestamp_for_table(spark_session=spark,table_name=table)
+    start_date = get_max_timestamp_for_table(spark_session=spark,table_name=table,env=ENV)
     query = (F"""
     (
     SELECT
@@ -46,7 +47,7 @@ def main():
         student_courseaccessrole
     ) AS T1
     """)
-    saveTable = f"bronze_local.entidades.{table}"
+    saveTable = f"bronze{ENV}.entidades.{table}"
     current_timestamp = spark.sql("SELECT current_timestamp() as c").first()["c"]
     logging.info(f"executing query in db {query}")
     src_df = read_data_from_sql(spark_session=spark,query=query,jdbc_url=jdbc_url,MYSQL_USER=MYSQL_USER,MYSQL_SECRET=MYSQL_SECRET)
@@ -57,7 +58,7 @@ def main():
     validate_table_that_delete_lines(src_table_df=src_df,tgt_table=tgt_table)
     nr = tgt_table.count()
     logging.info(f"number of record in table {nr}")
-    update_ctrl_table(spark_session=spark,table_name=table,current_timestamp=current_timestamp,number_of_records=nr)
+    update_ctrl_table(spark_session=spark,table_name=table,current_timestamp=current_timestamp,number_of_records=nr,env=ENV)
 
 if __name__ == "__main__":
     main()

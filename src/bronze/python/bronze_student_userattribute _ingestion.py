@@ -32,7 +32,7 @@ def main():
     tgt_pipeline = "entidades"
     tgt_table_name = "student_userattribute"
 
-    start_date = get_max_timestamp_for_table(spark_session=spark,table_name=tgt_table_name)
+    start_date = get_max_timestamp_for_table(spark_session=spark,table_name=tgt_table_name,env=ENVIRONMENT)
     
     current_timestamp = spark.sql("SELECT current_timestamp() as c").first()["c"]
 
@@ -74,12 +74,12 @@ def main():
     src_df.write.format("iceberg").mode("append").saveAsTable(saveTable)
     
     scr_full_df = read_data_from_sql(spark_session=spark,query=src_table,jdbc_url=jdbc_url,MYSQL_USER=MYSQL_USER,MYSQL_SECRET=MYSQL_SECRET)
-    nr = validate_ingestion_values(spark_session=spark,src_table_df=scr_full_df,table_name=tgt_table_name)
+    nr = validate_ingestion_values(spark_session=spark,src_table_df=scr_full_df,table_name=tgt_table_name,env=ENVIRONMENT)
     
     logging.info(f"number of record in table {nr}")
     
     #Finally, we update the control table with the number of records that were inserted or updated in this run. 
-    update_ctrl_table(spark_session=spark,table_name=tgt_table_name,current_timestamp=current_timestamp,number_of_records=nr)
+    update_ctrl_table(spark_session=spark,table_name=tgt_table_name,current_timestamp=current_timestamp,number_of_records=nr,env=ENVIRONMENT)
 
 if __name__ == "__main__":
     main()
