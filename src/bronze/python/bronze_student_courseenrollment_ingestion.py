@@ -24,6 +24,23 @@ def main():
     jdbc_url = f"jdbc:mysql://{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}" 
     ENV = get_required_env("ENVIRONMENT")
     spark = start_iceberg_session("ingeston_student_courseenrollment")
+    spark.sql(f"""
+        CREATE TABLE bronze{ENV}.entidades.student_courseenrollment(
+            id INT NOT NULL,
+            course_id STRING NOT NULL,
+            created TIMESTAMP,
+            is_active BOOLEAN NOT NULL,
+            mode STRING NOT NULL,
+            user_id INT NOT NULL,
+            row_hash STRING,
+            ingestion_date TIMESTAMP NOT NULL,
+            source_name STRING NOT NULL
+        )
+        USING ICEBERG
+        PARTITIONED BY (days(ingestion_date))
+        ;
+
+    """)
     table = "student_courseenrollment"
     start_date = get_max_timestamp_for_table(spark_session=spark,table_name=table,env=ENV)
     query = (F"""
