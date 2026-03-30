@@ -24,6 +24,7 @@ def main():
     jdbc_url = f"jdbc:mysql://{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}" 
     ENV = get_required_env("ENVIRONMENT")
     spark = start_iceberg_session("ingeston_course_overviews_courseoverview")
+    logging.info(f"Spark session created {spark}")
     table = "course_overviews_courseoverview"
     start_date = get_max_timestamp_for_table(spark_session=spark,table_name=table, env=ENV)
     spark.sql(f"""
