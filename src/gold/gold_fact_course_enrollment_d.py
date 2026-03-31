@@ -3,7 +3,7 @@ from pyspark.sql import functions as F #type:ignore
 from pyspark.sql.types import TimestampType, IntegerType, FloatType
 from pyspark.sql.window import Window
 from nau_analytics_data_product_utils_lib import start_iceberg_session,get_required_env #type: ignore
-from utils.bronze_utils_functions import update_ctrl_table,get_max_timestamp_for_table
+from utils.gold_utils_functions import update_ctrl_table,get_max_timestamp_for_table
 import logging
 
 logging.basicConfig(

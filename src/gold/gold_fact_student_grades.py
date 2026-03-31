@@ -4,7 +4,7 @@ from pyspark.sql.functions import col, lit, when, expr, greatest, row_number
 from pyspark.sql.types import TimestampType
 from pyspark.sql.window import Window
 from nau_analytics_data_product_utils_lib import start_iceberg_session,get_required_env #type: ignore
-from utils.bronze_utils_functions import update_ctrl_table,get_max_timestamp_for_table
+from utils.gold_utils_functions import update_ctrl_table,get_max_timestamp_for_table
 from datetime import datetime, timezone
 import logging
 
