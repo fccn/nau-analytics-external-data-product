@@ -66,7 +66,7 @@ def main():
     src_df = read_data_from_sql(spark_session=spark,query=query,jdbc_url=jdbc_url,MYSQL_USER=MYSQL_USER,MYSQL_SECRET=MYSQL_SECRET)
     src_df = add_ingestion_metadata_column(df=src_df,table=table,current_timestamp=current_timestamp)
     tgt_table = spark.sql(f"SELECT * FROM {saveTable}")
-    df.write.format("iceberg").mode("append").saveAsTable(saveTable)
+    src_df.write.format("iceberg").mode("append").saveAsTable(saveTable)
     nr = tgt_table.count()
     logging.info(f"number of record in table {nr}")
     update_ctrl_table(spark_session=spark,table_name=table,current_timestamp=current_timestamp,number_of_records=nr,env=ENV)
