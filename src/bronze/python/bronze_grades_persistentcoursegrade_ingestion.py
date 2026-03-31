@@ -27,7 +27,7 @@ def main():
     table = "grades_persistentcoursegrade"
     start_date = get_max_timestamp_for_table(spark_session=spark,table_name=table,env=ENV)
     spark.sql(f"""
-            CREATE TABLE IF NOT EXISTS bronze{ENV}.entidades.{table}
+            CREATE TABLE IF NOT EXISTS bronze{ENV}.entidades.{table} (
             id BIGINT NOT NULL,
             user_id INT NOT NULL,
             course_id STRING NOT NULL,
