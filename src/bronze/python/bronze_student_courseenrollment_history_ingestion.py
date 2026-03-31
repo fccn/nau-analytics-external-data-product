@@ -22,7 +22,7 @@ def main():
     ENV = get_required_env("ENVIRONMENT")
     spark = start_iceberg_session("ingeston_student_courseenrollment_history")
     spark.sql(f"""
-        CREATE TABLE bronze{ENV}.entidades.student_courseenrollment_history(
+        CREATE TABLE IF NOT EXISTS bronze{ENV}.entidades.student_courseenrollment_history(
             id INT NOT NULL,
             created TIMESTAMP,
             is_active BOOLEAN NOT NULL,
