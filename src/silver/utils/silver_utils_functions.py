@@ -15,7 +15,7 @@ logging.basicConfig(
 def update_ctrl_table(spark_session: SparkSession, table_name:str,current_timestamp: str ,number_of_records:int,env: str) -> bool:
     try:
         spark_session.sql(f"""
-            INSERT INTO  bronze{env}.audit.pipeline_run_ctrl
+            INSERT INTO  silver{env}.audit.pipeline_run_ctrl
             VALUES('entidades', '{table_name}', '{current_timestamp}', {number_of_records})
         """)
         return True 
