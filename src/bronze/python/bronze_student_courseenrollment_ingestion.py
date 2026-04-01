@@ -25,7 +25,7 @@ def main():
     ENV = get_required_env("ENVIRONMENT")
     spark = start_iceberg_session("ingeston_student_courseenrollment")
     spark.sql(f"""
-        CREATE TABLE bronze{ENV}.entidades.student_courseenrollment(
+        CREATE TABLE IF NOT EXISTS bronze{ENV}.entidades.student_courseenrollment(
             id INT NOT NULL,
             course_id STRING NOT NULL,
             created TIMESTAMP,
