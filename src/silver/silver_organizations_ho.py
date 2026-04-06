@@ -37,7 +37,7 @@ def main():
     last_execution_timestamp = get_max_timestamp_for_table(spark_session=spark,table_name=tgt_table_name,env=ENVIRONMENT)
 
     if last_execution_timestamp != FIXED_START_DATE:
-        raise SystemExit("N/A")
+        return
 
     #Initial creation of the table (only useful for first run)
     spark.sql(f"""
