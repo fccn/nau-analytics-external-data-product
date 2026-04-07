@@ -68,12 +68,17 @@ def main():
     # ── 1. Read incremental slice from source ────────────────────────────────
     logging.info("Reading incremental rows from source...")
 
+    dedup_window = Window.partitionBy("id").orderBy(F.desc("modified"))
+
     source_df = (
         spark.table(SOURCE_TABLE)
         .filter(
             (F.col("created")  > F.lit(last_execution_timestamp).cast(TimestampType())) |
             (F.col("modified") > F.lit(last_execution_timestamp).cast(TimestampType()))
         )
+        .withColumn("rn", row_number().over(dedup_window))
+        .filter(F.col("rn") == 1)
+        .drop("rn")
         .select(
             "id", "user_id", "course_id", "percent_grade", "letter_grade",
             "passed_timestamp", "created", "modified",
