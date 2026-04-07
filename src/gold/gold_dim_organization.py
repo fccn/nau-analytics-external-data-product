@@ -278,9 +278,14 @@ def main():
     logging.info(f"new scd2 rows to insert: {to_insert_staged.count()}")
 
     # ============================================================
-    # 6) ICEBERG INSERT (new versions and new records)
+    # 6) ICEBERG UPSERT (idempotente)
     # ============================================================
-    spark.sql(f"INSERT INTO {tgt_tbl} SELECT * FROM new_versions")
+    spark.sql(f"""
+        MERGE INTO {tgt_tbl} AS tgt
+        USING new_versions AS src
+        ON tgt.{surr_key} = src.{surr_key}
+        WHEN NOT MATCHED THEN INSERT *
+    """)
 
     logging.info("scd2 upsert completed successfully.")
 
