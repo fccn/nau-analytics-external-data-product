@@ -268,7 +268,8 @@ def main():
         .select(
             surr_key,
             f.col("org_cd").alias(business_key_tgt),
-            "name", "short_name", "description", "is_active", "created_src",
+            "name", "short_name", "description", "is_active",
+            f.col("created_src").alias("registration_date"),
             start_col, end_col, ts_col
         )
     )
