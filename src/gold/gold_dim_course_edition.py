@@ -335,7 +335,14 @@ def main():
     new_or_update_records = to_insert.count()
     logging.info(f"New or updated rows: {new_or_update_records}")
 
-    to_insert.writeTo(tgt_tbl).append()
+    to_insert.createOrReplaceTempView("stg_new_versions")
+
+    spark.sql(f"""
+        MERGE INTO {tgt_tbl} AS tgt
+        USING stg_new_versions AS src
+        ON tgt.course_edition_key = src.course_edition_key
+        WHEN NOT MATCHED THEN INSERT *
+    """)
 
     # =============================================================
     # 8) Iceberg optimization / cleanup
