@@ -127,8 +127,9 @@ def main():
     src_full = spark.table(src_tbl)
 
     src_inc = src_full.where(
-        (col("created")  > to_timestamp(lit(last_execution_timestamp))) |
-        (col("modified") > to_timestamp(lit(last_execution_timestamp)))
+        (col("created")       > to_timestamp(lit(last_execution_timestamp))) |
+        (col("modified")      > to_timestamp(lit(last_execution_timestamp))) |
+        (col("ingestion_date") > to_timestamp(lit(last_execution_timestamp)))
     )
 
     w = Window.partitionBy("id").orderBy(

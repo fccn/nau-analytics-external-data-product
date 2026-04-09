@@ -242,6 +242,9 @@ def main():
     # ============================================================
     # 5) PREPARE INSERT DATA (NEW + NEW VERSIONS)
     # ============================================================
+
+    spark.catalog.refreshTable(tgt_tbl)  # <- forçar leitura do estado actual da tabela
+    
     w_key = Window.partitionBy("org_cd").orderBy(f.col(surr_key).desc_nulls_last())
 
     latest_keys = (
