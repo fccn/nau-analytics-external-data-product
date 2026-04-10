@@ -1,28 +1,33 @@
-from pyspark.sql import DataFrame #type:ignore
-from pyspark.sql import functions as F #type:ignore
+from pyspark.sql import DataFrame  # type:ignore
+from pyspark.sql import functions as F  # type:ignore
 from pyspark.sql.types import TimestampType, IntegerType, FloatType
 from pyspark.sql.window import Window
-from nau_analytics_data_product_utils_lib import start_iceberg_session,get_required_env #type: ignore
-from utils.gold_utils_functions import update_ctrl_table,get_max_timestamp_for_table
+from nau_analytics_data_product_utils_lib import start_iceberg_session, get_required_env  # type: ignore
+from utils.gold_utils_functions import update_ctrl_table, get_max_timestamp_for_table
 import logging
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler()
-    ]
+    handlers=[logging.StreamHandler()]
 )
+
 
 def main():
     ENVIRONMENT = get_required_env("ENVIRONMENT")
 
     spark = start_iceberg_session("gold_fact_course_enrollment_daily")
-    spark.conf.set("spark.sql.shuffle.partitions", "8")
+
+    # FIX 1: Raise shuffle partitions from 8 → 200 to avoid huge skewed partitions
+    # after the sequence() explode. AQE will coalesce down where partitions are small.
+    spark.conf.set("spark.sql.shuffle.partitions", "200")
     spark.conf.set("spark.sql.adaptive.enabled", "true")
     spark.conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")
+    # FIX 2: Enable skew join handling — the exploded daily rows are highly skewed
+    # (long-running enrollments produce far more rows than short ones).
+    spark.conf.set("spark.sql.adaptive.skewJoin.enabled", "true")
 
-    #Variables
+    # Variables
     tgt_layer = f"gold{ENVIRONMENT}"
     tgt_pipeline = "entidades"
     tgt_table_name = "fact_course_enrollment_daily"
@@ -32,7 +37,9 @@ def main():
 
     current_timestamp = spark.sql("SELECT current_timestamp() as c").first()["c"]
 
-    last_execution_timestamp = get_max_timestamp_for_table(spark_session=spark,table_name=tgt_table_name,env=ENVIRONMENT)
+    last_execution_timestamp = get_max_timestamp_for_table(
+        spark_session=spark, table_name=tgt_table_name, env=ENVIRONMENT
+    )
 
     logging.info(f"Starting process from {last_execution_timestamp}")
 
@@ -103,7 +110,9 @@ def main():
     # ------------------------------
     # 2) Most recent state from history
     # ------------------------------
-    w = Window.partitionBy("id").orderBy(F.col("history_date").desc(), F.col("ingestion_date").desc())
+    w = Window.partitionBy("id").orderBy(
+        F.col("history_date").desc(), F.col("ingestion_date").desc()
+    )
 
     latest_hist = (
         hist_df
@@ -154,9 +163,13 @@ def main():
 
     # ------------------------------
     # 4) Dimensions (SCD2)
+    # FIX 3: Removed unconditional .hint("broadcast") on both dim tables.
+    # Forcing a broadcast on large SCD2 tables causes driver memory pressure.
+    # AQE (enabled above) will automatically broadcast if the table fits in memory,
+    # and fall back to a sort-merge join if it doesn't.
     # ------------------------------
-    dim_user = spark.read.table(DIM_USER_TBL).hint("broadcast").alias("du")
-    dim_ce   = spark.read.table(DIM_CE_TBL).hint("broadcast").alias("dce")
+    dim_user = spark.read.table(DIM_USER_TBL).alias("du")
+    dim_ce   = spark.read.table(DIM_CE_TBL).alias("dce")
 
     # ------------------------------
     # 5) JOIN with dim_course_edition (SCD2)
@@ -219,15 +232,27 @@ def main():
 
     # ------------------------------
     # 8) Expand to daily grain
+    # FIX 4: Cap effective_end to current_date() BEFORE the sequence() call.
+    # Without this, an open-ended enrollment (end_date = null → current_date) is
+    # fine, but a miscoded far-future date (e.g. 2099) would explode into tens of
+    # thousands of rows per enrollment. The cap also prevents generating future
+    # day_key rows that would need to be re-merged on every subsequent run.
     # ------------------------------
+    today = F.current_date()
+
     fact_daily = (
         fact_final
         .withColumn("st_aluno", F.to_date("course_enrollment_start_date"))
-        .withColumn("en_aluno", F.coalesce(F.to_date("course_enrollment_end_date"), F.current_date()))
+        .withColumn("en_aluno", F.coalesce(F.to_date("course_enrollment_end_date"), today))
         .withColumn("ce_start", F.to_date("ce_start_date"))
-        .withColumn("ce_end",   F.coalesce(F.to_date("ce_end_date"), F.current_date()))
+        .withColumn("ce_end",   F.coalesce(F.to_date("ce_end_date"), today))
         .withColumn("effective_start", F.greatest(F.col("st_aluno"), F.col("ce_start")))
-        .withColumn("effective_end",   F.least(F.col("en_aluno"),   F.col("ce_end")))
+        # FIX 4 (cont): clamp effective_end to today — no future rows, no runaway expansions
+        .withColumn("effective_end", F.least(
+            F.col("en_aluno"),
+            F.col("ce_end"),
+            today                          # ← hard cap at today
+        ))
         .filter(F.col("effective_start") <= F.col("effective_end"))
         .withColumn("date_array", F.expr("sequence(effective_start, effective_end, interval 1 day)"))
         .withColumn("day_key", F.explode("date_array"))
@@ -270,14 +295,32 @@ def main():
 
     # ------------------------------
     # 10) Iceberg maintenance
+    # FIX 5: Added max-concurrent-file-group-rewrites and partial-progress options.
+    #
+    # The original call processed 2,672 file groups with default (very low) concurrency,
+    # generating ~5,000+ Spark jobs serially across only 2 executors.
+    #
+    # - max-concurrent-file-group-rewrites: run up to 20 file groups in parallel
+    #   instead of nearly 1 at a time. Tune this to (num_executors * 2) for your cluster.
+    # - partial-progress.enabled: commit file groups in batches rather than holding
+    #   all rewrites in memory until the very end. This prevents OOM on large tables
+    #   and makes the job resumable if it fails mid-way.
+    # - partial-progress.max-commits: commit every 10 batches. Balances commit
+    #   overhead vs. memory pressure. Lower if you see OOM; raise if commits are slow.
     # ------------------------------
     try:
         spark.sql(f"""
           CALL {ICEBERG_CATALOG}.system.rewrite_data_files(
-            table => '{TGT_FACT_DAILY}',
+            table   => '{TGT_FACT_DAILY}',
             strategy => 'sort',
             sort_order => 'day_key ASC, course_edition_key ASC, user_key ASC',
-            options => map('min-input-files', '2', 'rewrite-all', 'false')
+            options => map(
+              'min-input-files',                    '2',
+              'rewrite-all',                        'false',
+              'max-concurrent-file-group-rewrites', '20',
+              'partial-progress.enabled',           'true',
+              'partial-progress.max-commits',       '10'
+            )
           )
         """)
         spark.sql(f"""
@@ -290,8 +333,15 @@ def main():
     except Exception as e:
         logging.warning(f"Iceberg procedures not executed ({e}).")
 
-    #Finally, we update the control table with the number of records that were inserted or updated in this run.
-    update_ctrl_table(spark_session=spark,table_name=tgt_table_name,current_timestamp=current_timestamp,number_of_records=0,env=ENVIRONMENT)
+    # Finally, update the control table with the run metadata.
+    update_ctrl_table(
+        spark_session=spark,
+        table_name=tgt_table_name,
+        current_timestamp=current_timestamp,
+        number_of_records=0,
+        env=ENVIRONMENT
+    )
+
 
 if __name__ == "__main__":
     main()
