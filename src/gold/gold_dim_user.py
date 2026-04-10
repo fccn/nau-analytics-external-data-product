@@ -342,6 +342,24 @@ def main():
     df_delta_raw.unpersist()
     df_staged_updates.unpersist()
 
+    try:
+        spark.sql(f"""
+          CALL {tgt_layer}.system.rewrite_data_files(
+            table => '{tgt_tbl}',
+            strategy => 'sort',
+            sort_order => 'user_key ASC'
+          )
+        """)
+        spark.sql(f"""
+          CALL {tgt_layer}.system.rewrite_manifests(table => '{tgt_tbl}')
+        """)
+        spark.sql(f"""
+          CALL {tgt_layer}.system.expire_snapshots(table => '{tgt_tbl}', retain_last => 5)
+        """)
+        logging.info("Iceberg maintenance executed: sort + compact + manifests + expire snapshots.")
+    except Exception as e:
+        logging.warning(f"Iceberg procedures not executed ({e}).")
+
     logging.info("Process completed successfully.")
 
     #Finally, we update the control table with the number of records that were inserted or updated in this run.

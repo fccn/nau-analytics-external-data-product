@@ -317,6 +317,24 @@ def main():
 
     logging.info("scd2 upsert completed successfully.")
 
+    try:
+        spark.sql(f"""
+          CALL {tgt_layer}.system.rewrite_data_files(
+            table => '{tgt_tbl}',
+            strategy => 'sort',
+            sort_order => 'short_name ASC'
+          )
+        """)
+        spark.sql(f"""
+          CALL {tgt_layer}.system.rewrite_manifests(table => '{tgt_tbl}')
+        """)
+        spark.sql(f"""
+          CALL {tgt_layer}.system.expire_snapshots(table => '{tgt_tbl}', retain_last => 5)
+        """)
+        logging.info("Iceberg maintenance executed: sort + compact + manifests + expire snapshots.")
+    except Exception as e:
+        logging.warning(f"Iceberg procedures not executed ({e}).")
+
     changes.unpersist()
 
     total_records = new_or_update_records + nr_changes
