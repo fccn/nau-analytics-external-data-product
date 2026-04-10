@@ -23,34 +23,62 @@ class AggTable:
     partition_by: str
     sort_order: str
 
-
-def _fact_enrollment_daily_agg_sql(tgt_layer: str) -> str:
+# Superset Dataset: Formandos Inscritos
+def _fact_enrolled_students_agg_sql(tgt_layer: str) -> str:
     return f"""
         SELECT
             fce.day_key,
+            fce.course_enrollment_cd,
             dorg.org_cd,
-            dorg.short_name                                         AS org_short_name,
-            dce.display_number                                      AS course_cd,
-            dce.display_name                                        AS course_name,
+            dorg.short_name                                             AS org_short_name,
+            dce.display_number                                          AS course_cd,
+            dce.display_name                                            AS course_name,
             dce.edition,
-            du.country,
-            du.level_of_education,
-            du.employment_situation,
-            du.gender,
+            du.user_cd,
+            du.year_of_birth,
             CASE
-                WHEN du.year_of_birth IS NULL                                             THEN 'N/A'
-                WHEN year(fce.day_key) - du.year_of_birth < 18                           THEN 'Menor 18'
-                WHEN year(fce.day_key) - du.year_of_birth BETWEEN 18 AND 29              THEN '18-29'
-                WHEN year(fce.day_key) - du.year_of_birth BETWEEN 30 AND 54              THEN '30-54'
+                WHEN du.gender = 'm' THEN 'Male'
+                WHEN du.gender = 'f' THEN 'Female'
+                WHEN du.gender = 'o' THEN 'Other'
+                ELSE 'N/A'
+            END                                                         AS gender,
+            du.level_of_education,
+            du.country,
+            CASE
+                WHEN du.year_of_birth IS NULL THEN NULL
+                ELSE year(CURRENT_DATE) - du.year_of_birth
+            END                                                         AS age,
+            CASE
+                WHEN du.year_of_birth IS NULL                                    THEN 'N/A'
+                WHEN year(CURRENT_DATE) - du.year_of_birth < 18                 THEN 'Menor 18'
+                WHEN year(CURRENT_DATE) - du.year_of_birth BETWEEN 18 AND 29    THEN '18-29'
+                WHEN year(CURRENT_DATE) - du.year_of_birth BETWEEN 30 AND 54    THEN '30-54'
                 ELSE '55+'
-            END                                                     AS age_range,
+            END                                                         AS age_range,
+            CASE
+                WHEN du.level_of_education IS NULL  THEN 'N/A'
+                WHEN du.level_of_education = 'm'    THEN 'Master''s degree'
+                WHEN du.level_of_education = 'jhs'  THEN 'Junior High School'
+                WHEN du.level_of_education = 'hs'   THEN 'High School'
+                WHEN du.level_of_education = 'b'    THEN 'Bachelor''s degree'
+                WHEN du.level_of_education = 'p'    THEN 'PhD / Doctorate'
+                WHEN du.level_of_education = 'a'    THEN 'Associate degree'
+                ELSE 'Other'
+            END                                                         AS escolaridade,
             fce.is_enrolled,
-            COUNT(DISTINCT fce.course_enrollment_cd)                AS enrollment_count,
-            COUNT(DISTINCT du.user_cd)                              AS user_count,
-            COUNT(DISTINCT
-                CAST(fce.course_enrollment_cd AS STRING)
-                || CAST(du.user_cd AS STRING)
-            )                                                       AS unique_key_count
+            CASE WHEN du.employment_situation IS NULL THEN 'N/A'
+                 ELSE du.employment_situation
+            END                                                         AS employment_situation,
+            CONCAT(
+                CAST(fce.course_enrollment_cd AS STRING),
+                CAST(du.user_cd AS STRING)
+            )                                                           AS unique_key,
+            CONCAT(
+                CAST(dt.year AS STRING),
+                lpad(CAST(dt.month AS STRING), 2, '0'),
+                ' - ',
+                dt.month_name
+            )                                                           AS month_name
         FROM       {tgt_layer}.entidades.fact_course_enrollment_daily  fce
         LEFT JOIN  {tgt_layer}.entidades.dim_user                      du
                ON  fce.user_key = du.user_key
@@ -59,19 +87,70 @@ def _fact_enrollment_daily_agg_sql(tgt_layer: str) -> str:
         LEFT JOIN  {tgt_layer}.entidades.dim_course_edition            dce
                ON  fce.course_edition_key = dce.course_edition_key
               AND  fce.org_key            = dce.org_key
-        GROUP BY
-            fce.day_key, dorg.org_cd, dorg.short_name,
-            dce.display_number, dce.display_name, dce.edition,
-            du.country, du.level_of_education, du.employment_situation,
-            du.gender, age_range, fce.is_enrolled
+        JOIN       {tgt_layer}.entidades.dim_time                      dt
+               ON  fce.day_key = dt.date
+    """
+
+# Superset Dataset: Taxa Conclusão Final
+def _fact_conclusion_rate_agg_sql(tgt_layer: str) -> str:
+    return f"""
+        SELECT
+            CAST(fc.day_key AS DATE)        AS day_key,
+            fc.user_key,
+            fc.org_key,
+            'certificate'                   AS event_type,
+            CAST(NULL AS STRING)            AS course_enrollment_cd,
+            dorg.org_cd,
+            dorg.short_name                 AS org_short_name,
+            dce.display_number              AS course_cd,
+            dce.display_name                AS course_name,
+            dce.edition,
+            du.user_cd
+        FROM       {tgt_layer}.entidades.fact_certificate_daily       fc
+        LEFT JOIN  {tgt_layer}.entidades.dim_user                     du
+               ON  fc.user_key = du.user_key
+        LEFT JOIN  {tgt_layer}.entidades.dim_organization             dorg
+               ON  fc.org_key  = dorg.org_key
+        LEFT JOIN  {tgt_layer}.entidades.dim_course_edition           dce
+               ON  fc.course_edition_key = dce.course_edition_key
+              AND  fc.org_key            = dce.org_key
+
+        UNION ALL
+
+        SELECT
+            CAST(fce.day_key AS DATE)       AS day_key,
+            fce.user_key,
+            fce.org_key,
+            'enrollment'                    AS event_type,
+            fce.course_enrollment_cd,
+            dorg.org_cd,
+            dorg.short_name                 AS org_short_name,
+            dce.display_number              AS course_cd,
+            dce.display_name                AS course_name,
+            dce.edition,
+            du.user_cd
+        FROM       {tgt_layer}.entidades.fact_course_enrollment_daily fce
+        LEFT JOIN  {tgt_layer}.entidades.dim_user                     du
+               ON  fce.user_key = du.user_key
+        LEFT JOIN  {tgt_layer}.entidades.dim_organization             dorg
+               ON  fce.org_key  = dorg.org_key
+        LEFT JOIN  {tgt_layer}.entidades.dim_course_edition           dce
+               ON  fce.course_edition_key = dce.course_edition_key
+              AND  fce.org_key            = dce.org_key
     """
 
 
 # Registry — add new aggregation tables here
 AGG_TABLES: list[AggTable] = [
     AggTable(
-        name         = "fact_enrollment_daily_agg",
-        sql_fn       = _fact_enrollment_daily_agg_sql,
+        name         = "fact_enrolled_students_agg",
+        sql_fn       = _fact_enrolled_students_agg_sql,
+        partition_by = "days(day_key)",
+        sort_order   = "day_key ASC, org_cd ASC, course_cd ASC",
+    ),
+    AggTable(
+        name         = "fact_conclusion_rate_agg",
+        sql_fn       = _fact_conclusion_rate_agg_sql,
         partition_by = "days(day_key)",
         sort_order   = "day_key ASC, org_cd ASC, course_cd ASC",
     ),
