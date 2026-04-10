@@ -72,6 +72,38 @@ def main():
         last_update_timestamp   TIMESTAMP    COMMENT 'Timestamp of last update (ETL time)'
     )
     USING iceberg
+    TBLPROPERTIES (
+        'write.parquet.compression-codec'                   = 'zstd',
+        'write.target-file-size-bytes'                      = '536870912',
+        'write.distribution-mode'                           = 'none',
+        'write.sort.order'                                          = 'short_name ASC',
+        'commit.manifest.min-count-to-merge'                        = '100',
+        'write.merge.enabled'                                       = 'true',
+        'read.split.target-size'                                    = '134217728',
+        'read.split.open-file-cost'                                 = '4194304',
+        'write.metadata.delete-after-commit.enabled'                = 'true',
+        'write.metadata.previous-versions-max'                      = '10',
+        'write.parquet.bloom-filter.enabled.column.short_name'      = 'true',
+        'write.parquet.bloom-filter.enabled.column.org_key'         = 'true'
+    )
+    """)
+
+    spark.sql(f"""
+        ALTER TABLE {tgt_layer}.{tgt_pipeline}.{tgt_table_name}
+        SET TBLPROPERTIES (
+            'write.parquet.compression-codec'                   = 'zstd',
+            'write.target-file-size-bytes'                      = '536870912',
+            'write.distribution-mode'                           = 'none',
+            'write.sort.order'                                          = 'short_name ASC',
+            'commit.manifest.min-count-to-merge'                        = '100',
+            'write.merge.enabled'                                       = 'true',
+            'read.split.target-size'                                    = '134217728',
+            'read.split.open-file-cost'                                 = '4194304',
+            'write.metadata.delete-after-commit.enabled'                = 'true',
+            'write.metadata.previous-versions-max'                      = '10',
+            'write.parquet.bloom-filter.enabled.column.short_name'      = 'true',
+            'write.parquet.bloom-filter.enabled.column.org_key'         = 'true'
+        )
     """)
 
     # If this is the first time the script runs, we'll use the historicalorganization
@@ -156,8 +188,6 @@ def main():
              .alias("s")
     )
 
-    logging.info(f"source rows updated since last run: {src.count()}")
-
     # ============================================================
     # 2) LOAD TARGET CURRENT ROWS (deduped)
     # ============================================================
@@ -172,8 +202,6 @@ def main():
            .drop("rn")
            .alias("tcur")
     )
-
-    logging.info(f"active target scd2 rows: {tgt_current.count()}")
 
     # ============================================================
     # 3) JOIN SOURCE + TARGET AND DETECT CHANGES
@@ -237,8 +265,6 @@ def main():
              {ts_col}  = s.ts_now
     """)
 
-    logging.info(f"closed scd2 rows: {changed_keys.count()}")
-
     # ============================================================
     # 5) PREPARE INSERT DATA (NEW + NEW VERSIONS)
     # ============================================================
@@ -279,8 +305,6 @@ def main():
 
     to_insert_staged.createOrReplaceTempView("new_versions")
 
-    logging.info(f"new scd2 rows to insert: {to_insert_staged.count()}")
-
     # ============================================================
     # 6) ICEBERG UPSERT (idempotente)
     # ============================================================
@@ -292,6 +316,8 @@ def main():
     """)
 
     logging.info("scd2 upsert completed successfully.")
+
+    changes.unpersist()
 
     total_records = new_or_update_records + nr_changes
 

@@ -55,18 +55,20 @@ def main():
             last_update_timestamp          TIMESTAMP    COMMENT 'ETL timestamp'
         )
         USING iceberg
-        PARTITIONED BY (day_key)
         TBLPROPERTIES (
             'write.parquet.compression-codec' = 'zstd',
             'write.target-file-size-bytes' = '536870912',
-            'write.distribution-mode' = 'hash',
+            'write.distribution-mode' = 'none',
             'write.sort.order' = 'day_key ASC, course_edition_key ASC',
             'commit.manifest.min-count-to-merge' = '100',
             'write.merge.enabled' = 'true',
             'read.split.target-size' = '134217728',
             'read.split.open-file-cost' = '4194304',
             'write.metadata.delete-after-commit.enabled' = 'true',
-            'write.metadata.previous-versions-max' = '10'
+            'write.metadata.previous-versions-max' = '10',
+            'write.parquet.bloom-filter.enabled.column.course_edition_key' = 'true',
+            'write.parquet.bloom-filter.enabled.column.user_key'           = 'true',
+            'write.parquet.bloom-filter.enabled.column.org_key'            = 'true'
         );
     """)
 

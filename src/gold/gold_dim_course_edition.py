@@ -104,14 +104,17 @@ def main():
         TBLPROPERTIES (
             'write.parquet.compression-codec' = 'zstd',
             'write.target-file-size-bytes' = '536870912',
-            'write.distribution-mode' = 'hash',
-            'write.sort.order' = 'org_key ASC, course_edition_cd ASC, version ASC',
+            'write.distribution-mode' = 'none',
+            'write.sort.order' = 'display_name ASC, edition ASC',
             'commit.manifest.min-count-to-merge' = '100',
             'write.merge.enabled' = 'true',
             'read.split.target-size' = '134217728',
             'read.split.open-file-cost' = '4194304',
             'write.metadata.delete-after-commit.enabled' = 'true',
-            'write.metadata.previous-versions-max' = '10'
+            'write.metadata.previous-versions-max' = '10',
+            'write.parquet.bloom-filter.enabled.column.course_edition_key' = 'true',
+            'write.parquet.bloom-filter.enabled.column.display_name'       = 'true',
+            'write.parquet.bloom-filter.enabled.column.edition'            = 'true'
         );
     """)
 
@@ -352,7 +355,8 @@ def main():
         spark.sql(f"""
           CALL {tgt_layer}.system.rewrite_data_files(
             table => '{tgt_tbl}',
-            options => map('target-file-size-bytes','536870912')
+            strategy => 'sort',
+            sort_order => 'course_edition_cd,key_start_date'
           )
         """)
         spark.sql(f"""
@@ -360,13 +364,6 @@ def main():
         """)
         spark.sql(f"""
           CALL {tgt_layer}.system.expire_snapshots(table => '{tgt_tbl}', retain_last => 5)
-        """)
-        spark.sql(f"""
-            CALL {tgt_layer}.system.rewrite_data_files(
-              table => '{tgt_tbl}',
-              strategy => 'sort',
-              sort_order => 'course_edition_cd,key_start_date'
-            )
         """)
         logging.info("Iceberg maintenance executed: sort + compact + manifests + expire snapshots.")
     except Exception as e:

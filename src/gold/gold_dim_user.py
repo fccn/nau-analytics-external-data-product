@@ -78,6 +78,38 @@ def main():
         last_update_timestamp   TIMESTAMP    COMMENT 'Timestamp of last update (ETL time)'
     )
     USING iceberg
+    TBLPROPERTIES (
+        'write.parquet.compression-codec'                    = 'zstd',
+        'write.target-file-size-bytes'                       = '536870912',
+        'write.distribution-mode'                            = 'none',
+        'write.sort.order'                                   = 'user_key ASC',
+        'commit.manifest.min-count-to-merge'                 = '100',
+        'write.merge.enabled'                                = 'true',
+        'read.split.target-size'                             = '134217728',
+        'read.split.open-file-cost'                          = '4194304',
+        'write.metadata.delete-after-commit.enabled'         = 'true',
+        'write.metadata.previous-versions-max'               = '10',
+        'write.parquet.bloom-filter.enabled.column.user_key' = 'true',
+        'write.parquet.bloom-filter.enabled.column.user_cd'  = 'true'
+    )
+    """)
+
+    spark.sql(f"""
+        ALTER TABLE {tgt_layer}.{tgt_pipeline}.{tgt_table_name}
+        SET TBLPROPERTIES (
+            'write.parquet.compression-codec'                    = 'zstd',
+            'write.target-file-size-bytes'                       = '536870912',
+            'write.distribution-mode'                            = 'none',
+            'write.sort.order'                                   = 'user_key ASC',
+            'commit.manifest.min-count-to-merge'                 = '100',
+            'write.merge.enabled'                                = 'true',
+            'read.split.target-size'                             = '134217728',
+            'read.split.open-file-cost'                          = '4194304',
+            'write.metadata.delete-after-commit.enabled'         = 'true',
+            'write.metadata.previous-versions-max'               = '10',
+            'write.parquet.bloom-filter.enabled.column.user_key' = 'true',
+            'write.parquet.bloom-filter.enabled.column.user_cd'  = 'true'
+        )
     """)
 
     logging.info(f"Starting incremental processing for data after: {last_execution_timestamp}")

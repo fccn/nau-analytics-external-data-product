@@ -38,7 +38,7 @@ def main():
     spark.sql(f"""
         CREATE TABLE IF NOT EXISTS {tgt_layer}.{tgt_pipeline}.{tgt_table_name} (
             -- Grain
-            day_key                          DATE        COMMENT 'Date of the event (day of certificate issue). Partition key',
+            day_key                          DATE        COMMENT 'Date of the event (day of certificate issue)',
 
             -- Natural key
             certificate_cd                   STRING      COMMENT 'Certificate identifier (source: certificates_generatedcertificate.id)',
@@ -56,9 +56,8 @@ def main():
             last_update_timestamp            TIMESTAMP   COMMENT 'ETL timestamp'
         )
         USING iceberg
-        PARTITIONED BY (day_key)
         TBLPROPERTIES (
-          'write.distribution-mode' = 'hash',
+          'write.distribution-mode' = 'none',
           'write.target-file-size-bytes' = '536870912',
           'write.parquet.compression-codec' = 'zstd',
           'write.sort.order' = 'day_key ASC, course_edition_key ASC, user_key ASC',
@@ -67,7 +66,10 @@ def main():
           'commit.manifest.min-count-to-merge' = '100',
           'write.merge.enabled' = 'true',
           'write.metadata.delete-after-commit.enabled' = 'true',
-          'write.metadata.previous-versions-max' = '10'
+          'write.metadata.previous-versions-max' = '10',
+          'write.parquet.bloom-filter.enabled.column.course_edition_key' = 'true',
+          'write.parquet.bloom-filter.enabled.column.user_key'           = 'true',
+          'write.parquet.bloom-filter.enabled.column.org_key'            = 'true'
         );
     """)
 
@@ -99,8 +101,6 @@ def main():
         .drop("rn")
         .alias("s")
     )
-
-    logging.info(f"Incoming source records after dedup: {src_latest.count()}")
 
     # ---------------------------------------------------------
     # 2) Dimensions (SCD2)

@@ -54,6 +54,38 @@ def main():
             last_update_timestamp          TIMESTAMP NOT NULL     COMMENT 'Timestamp of last update (ETL time)'
         )
         USING iceberg
+        TBLPROPERTIES (
+            'write.parquet.compression-codec'                                = 'zstd',
+            'write.target-file-size-bytes'                                   = '536870912',
+            'write.distribution-mode'                                        = 'none',
+            'write.sort.order'                                               = 'course_edition_key ASC, user_key ASC',
+            'commit.manifest.min-count-to-merge'                             = '100',
+            'write.merge.enabled'                                            = 'true',
+            'read.split.target-size'                                         = '134217728',
+            'read.split.open-file-cost'                                      = '4194304',
+            'write.metadata.delete-after-commit.enabled'                     = 'true',
+            'write.metadata.previous-versions-max'                           = '10',
+            'write.parquet.bloom-filter.enabled.column.course_edition_key'   = 'true',
+            'write.parquet.bloom-filter.enabled.column.user_key'             = 'true'
+        )
+    """)
+
+    spark.sql(f"""
+        ALTER TABLE {tgt_layer}.{tgt_pipeline}.{tgt_table_name}
+        SET TBLPROPERTIES (
+            'write.parquet.compression-codec'                                = 'zstd',
+            'write.target-file-size-bytes'                                   = '536870912',
+            'write.distribution-mode'                                        = 'none',
+            'write.sort.order'                                               = 'course_edition_key ASC, user_key ASC',
+            'commit.manifest.min-count-to-merge'                             = '100',
+            'write.merge.enabled'                                            = 'true',
+            'read.split.target-size'                                         = '134217728',
+            'read.split.open-file-cost'                                      = '4194304',
+            'write.metadata.delete-after-commit.enabled'                     = 'true',
+            'write.metadata.previous-versions-max'                           = '10',
+            'write.parquet.bloom-filter.enabled.column.course_edition_key'   = 'true',
+            'write.parquet.bloom-filter.enabled.column.user_key'             = 'true'
+        )
     """)
 
     SOURCE_TABLE  = f"{src_layer}.{src_pipeline}.{src_table_name}"
@@ -199,12 +231,27 @@ def main():
 
     logging.info("MERGE completed successfully.")
 
-    # ── 9. Post-merge summary ────────────────────────────────────────────────
-    target_total = spark.table(TARGET_TABLE).count()
-    logging.info(f"Total rows in target after merge : {target_total}")
+    # ── 9. Iceberg maintenance ───────────────────────────────────────────────
+    try:
+        spark.sql(f"""
+          CALL {tgt_layer}.system.rewrite_data_files(
+            table => '{TARGET_TABLE}',
+            strategy => 'sort',
+            sort_order => 'course_edition_key ASC, user_key ASC'
+          )
+        """)
+        spark.sql(f"""
+          CALL {tgt_layer}.system.rewrite_manifests(table => '{TARGET_TABLE}')
+        """)
+        spark.sql(f"""
+          CALL {tgt_layer}.system.expire_snapshots(table => '{TARGET_TABLE}', retain_last => 5)
+        """)
+        logging.info("Iceberg maintenance executed: sort + compact + manifests + expire snapshots.")
+    except Exception as e:
+        logging.warning(f"Iceberg procedures not executed ({e}).")
 
     #Finally, we update the control table with the number of records that were inserted or updated in this run.
-    update_ctrl_table(spark_session=spark,table_name=tgt_table_name,current_timestamp=current_timestamp,number_of_records=target_total,env=ENVIRONMENT)
+    update_ctrl_table(spark_session=spark,table_name=tgt_table_name,current_timestamp=current_timestamp,number_of_records=incremental_count,env=ENVIRONMENT)
 
 if __name__ == "__main__":
     main()
