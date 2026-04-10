@@ -74,7 +74,7 @@ def main():
     USING iceberg
     TBLPROPERTIES (
         'write.parquet.compression-codec'                   = 'zstd',
-        'write.target-file-size-bytes'                      = '536870912',
+        'write.target-file-size-bytes'                      = '134217728',
         'write.distribution-mode'                           = 'none',
         'write.sort.order'                                          = 'short_name ASC',
         'commit.manifest.min-count-to-merge'                        = '100',
@@ -86,24 +86,6 @@ def main():
         'write.parquet.bloom-filter.enabled.column.short_name'      = 'true',
         'write.parquet.bloom-filter.enabled.column.org_key'         = 'true'
     )
-    """)
-
-    spark.sql(f"""
-        ALTER TABLE {tgt_layer}.{tgt_pipeline}.{tgt_table_name}
-        SET TBLPROPERTIES (
-            'write.parquet.compression-codec'                   = 'zstd',
-            'write.target-file-size-bytes'                      = '536870912',
-            'write.distribution-mode'                           = 'none',
-            'write.sort.order'                                          = 'short_name ASC',
-            'commit.manifest.min-count-to-merge'                        = '100',
-            'write.merge.enabled'                                       = 'true',
-            'read.split.target-size'                                    = '134217728',
-            'read.split.open-file-cost'                                 = '4194304',
-            'write.metadata.delete-after-commit.enabled'                = 'true',
-            'write.metadata.previous-versions-max'                      = '10',
-            'write.parquet.bloom-filter.enabled.column.short_name'      = 'true',
-            'write.parquet.bloom-filter.enabled.column.org_key'         = 'true'
-        )
     """)
 
     # If this is the first time the script runs, we'll use the historicalorganization
