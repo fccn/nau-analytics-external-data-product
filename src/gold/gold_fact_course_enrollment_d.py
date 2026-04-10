@@ -18,6 +18,7 @@ def main():
     ENVIRONMENT = get_required_env("ENVIRONMENT")
 
     spark = start_iceberg_session("gold_fact_course_enrollment_daily")
+    spark.conf.set("spark.sql.shuffle.partitions", "8")
 
     #Variables
     tgt_layer = f"gold{ENVIRONMENT}"
@@ -238,8 +239,6 @@ def main():
     # ------------------------------
     fact_daily.createOrReplaceTempView("fact_daily_tmp")
 
-    new_or_update_records = fact_daily.count()
-
     spark.sql(f"""
         MERGE INTO {TGT_FACT_DAILY} AS t
         USING fact_daily_tmp AS s
@@ -288,7 +287,7 @@ def main():
         logging.warning(f"Iceberg procedures not executed ({e}).")
 
     #Finally, we update the control table with the number of records that were inserted or updated in this run.
-    update_ctrl_table(spark_session=spark,table_name=tgt_table_name,current_timestamp=current_timestamp,number_of_records=new_or_update_records,env=ENVIRONMENT)
+    update_ctrl_table(spark_session=spark,table_name=tgt_table_name,current_timestamp=current_timestamp,number_of_records=0,env=ENVIRONMENT)
 
 if __name__ == "__main__":
     main()
