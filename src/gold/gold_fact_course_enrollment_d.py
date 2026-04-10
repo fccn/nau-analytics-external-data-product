@@ -19,6 +19,8 @@ def main():
 
     spark = start_iceberg_session("gold_fact_course_enrollment_daily")
     spark.conf.set("spark.sql.shuffle.partitions", "8")
+    spark.conf.set("spark.sql.adaptive.enabled", "true")
+    spark.conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")
 
     #Variables
     tgt_layer = f"gold{ENVIRONMENT}"
@@ -37,7 +39,7 @@ def main():
     spark.sql(f"""
         CREATE TABLE IF NOT EXISTS {tgt_layer}.{tgt_pipeline}.{tgt_table_name} (
             -- Grain
-            day_key                        DATE         COMMENT 'Date of fact (one row per day)',
+            day_key                        DATE         COMMENT 'Date of fact (one row per day). Partition key',
 
             -- Natural Key
             course_enrollment_cd           STRING       COMMENT 'Enrollment identifier (original LMS id)',
@@ -56,10 +58,11 @@ def main():
             last_update_timestamp          TIMESTAMP    COMMENT 'ETL timestamp'
         )
         USING iceberg
+        PARTITIONED BY (days(day_key))
         TBLPROPERTIES (
             'write.parquet.compression-codec' = 'zstd',
             'write.target-file-size-bytes' = '536870912',
-            'write.distribution-mode' = 'none',
+            'write.distribution-mode' = 'hash',
             'write.sort.order' = 'day_key ASC, course_edition_key ASC',
             'commit.manifest.min-count-to-merge' = '100',
             'write.merge.enabled' = 'true',
@@ -152,8 +155,8 @@ def main():
     # ------------------------------
     # 4) Dimensions (SCD2)
     # ------------------------------
-    dim_user = spark.read.table(DIM_USER_TBL).alias("du")
-    dim_ce   = spark.read.table(DIM_CE_TBL).alias("dce")
+    dim_user = spark.read.table(DIM_USER_TBL).hint("broadcast").alias("du")
+    dim_ce   = spark.read.table(DIM_CE_TBL).hint("broadcast").alias("dce")
 
     # ------------------------------
     # 5) JOIN with dim_course_edition (SCD2)
@@ -273,7 +276,8 @@ def main():
           CALL {ICEBERG_CATALOG}.system.rewrite_data_files(
             table => '{TGT_FACT_DAILY}',
             strategy => 'sort',
-            sort_order => 'day_key ASC, course_edition_key ASC, user_key ASC'
+            sort_order => 'day_key ASC, course_edition_key ASC, user_key ASC',
+            options => map('min-input-files', '2', 'rewrite-all', 'false')
           )
         """)
         spark.sql(f"""
