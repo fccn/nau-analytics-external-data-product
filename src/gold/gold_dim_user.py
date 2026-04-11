@@ -17,6 +17,8 @@ def main():
     ENVIRONMENT = get_required_env("ENVIRONMENT")
 
     spark = start_iceberg_session("gold_dim_user")
+    spark.conf.set("spark.sql.adaptive.enabled", "true")
+    spark.conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")
 
     #Variables
     tgt_layer = f"gold{ENVIRONMENT}"
@@ -161,12 +163,25 @@ def main():
         F.col("p.year_of_birth")
     ).cache()
 
+    # Early exit — nothing to process
+    delta_count = df_delta_raw.count()
+    logging.info(f"Delta rows to process: {delta_count}")
+    if delta_count == 0:
+        logging.info("No new or updated records. Exiting.")
+        update_ctrl_table(spark_session=spark, table_name=tgt_table_name,
+                          current_timestamp=current_timestamp, number_of_records=0, env=ENVIRONMENT)
+        return
+
+    # Collect only the affected user IDs so gold reads are scoped to changed users
+    changed_user_ids = [r.user_id for r in df_delta_raw.select("user_id").distinct().collect()]
+    logging.info(f"Distinct users in delta: {len(changed_user_ids)}")
+
     # ---------------------------------------------------------
-    # 4. Read Gold (Target)
+    # 4. Read Gold (Target) — scoped to changed users only
     # ---------------------------------------------------------
     tgt_tbl = f"{tgt_layer}.{tgt_pipeline}.{tgt_table_name}"
     try:
-        df_target_full   = spark.table(tgt_tbl).cache()
+        df_target_full   = spark.table(tgt_tbl).filter(F.col("user_cd").isin(changed_user_ids)).cache()
         df_target_versions = df_target_full \
             .groupBy("user_cd") \
             .agg(F.count("*").alias("max_version"))
@@ -333,7 +348,8 @@ def main():
           CALL {tgt_layer}.system.rewrite_data_files(
             table => '{tgt_tbl}',
             strategy => 'sort',
-            sort_order => 'user_key ASC'
+            sort_order => 'user_key ASC',
+            options => map('min-input-files', '2', 'rewrite-all', 'false')
           )
         """)
         spark.sql(f"""
