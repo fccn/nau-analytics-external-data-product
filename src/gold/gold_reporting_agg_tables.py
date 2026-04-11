@@ -241,10 +241,10 @@ def _certificates_agg_sql(tgt_layer: str) -> str:
             dce.edition,
             fc.certificate_cd,
             CONCAT(
-                CAST(dt.year AS VARCHAR),
-                LPAD(CAST(dt.month AS VARCHAR), 2, '0'),
+                CAST(dt.year AS STRING),
+                LPAD(CAST(dt.month AS STRING), 2, '0'),
                 ' - ',
-                CAST(dt.month_name AS VARCHAR)
+                CAST(dt.month_name AS STRING)
             )                               AS month_name
         FROM {tgt_layer}.entidades.fact_certificate_daily fc
         LEFT OUTER JOIN {tgt_layer}.entidades.dim_organization do
@@ -274,9 +274,9 @@ def _enrollments_vs_certificates_agg_sql(tgt_layer: str) -> str:
             END                             AS nr_days_to_conclusion,
             fc.certificate_cd,
             CONCAT(
-                CAST(dt.year AS VARCHAR),
+                CAST(dt.year AS STRING),
                 ' - ',
-                CAST(dt.month_name AS VARCHAR)
+                CAST(dt.month_name AS STRING)
             )                               AS month_name
         FROM {tgt_layer}.entidades.fact_course_enrollment_daily fce
         LEFT OUTER JOIN {tgt_layer}.entidades.dim_user du
