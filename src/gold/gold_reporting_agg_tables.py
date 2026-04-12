@@ -150,54 +150,39 @@ def _fact_conclusion_rate_agg_sql(tgt_layer: str) -> str:
 # Superset Dataset: Tickets vs Courses
 def _tickets_vs_courses_agg_sql(tgt_layer: str) -> str:
     return f"""
-        WITH courses AS (
-            SELECT
-                fce.day_key,
-                do.org_cd,
-                do.name                                                         AS org_name,
-                do.short_name                                                   AS org_short_name,
-                fce.course_cd,
-                dce.display_name                                                AS course_name,
-                dce.edition,
-                CASE
-                    WHEN dce.start_date = MAX(dce.start_date) OVER (PARTITION BY fce.course_cd)
-                    THEN 1
-                    ELSE 0
-                END                                                             AS is_latest_edition,
-                CASE
-                    WHEN dce.start_date = MAX(dce.start_date) OVER (PARTITION BY fce.course_cd)
-                    THEN 'Novos Cursos'
-                    ELSE 'Reedições'
-                END                                                             AS edition_type
-            FROM {tgt_layer}.entidades.fact_course_edition_daily fce
-            LEFT JOIN {tgt_layer}.entidades.dim_organization do
-                ON fce.org_key = do.org_key
-            LEFT JOIN {tgt_layer}.entidades.dim_course_edition dce
-                ON fce.course_edition_key = dce.course_edition_key
-               AND fce.org_key = dce.org_key
-        ),
-        tickets_daily AS (
+        SELECT
+            fce.day_key,
+            do.org_cd,
+            do.name                                                         AS org_name,
+            do.short_name                                                   AS org_short_name,
+            fce.course_cd,
+            dce.display_name                                                AS course_name,
+            dce.edition,
+            CASE
+                WHEN dce.start_date = MAX(dce.start_date) OVER (PARTITION BY fce.course_cd)
+                THEN 1
+                ELSE 0
+            END                                                             AS is_latest_edition,
+            CASE
+                WHEN dce.start_date = MAX(dce.start_date) OVER (PARTITION BY fce.course_cd)
+                THEN 'Novos Cursos'
+                ELSE 'Reedições'
+            END                                                             AS edition_type,
+            t.ticket_type_origin,
+            t.ticket_key
+        FROM {tgt_layer}.entidades.fact_course_edition_daily fce
+        LEFT JOIN {tgt_layer}.entidades.dim_organization do
+            ON fce.org_key = do.org_key
+        LEFT JOIN {tgt_layer}.entidades.dim_course_edition dce
+            ON fce.course_edition_key = dce.course_edition_key
+           AND fce.org_key = dce.org_key
+        LEFT JOIN (
             SELECT
                 DATE(created)       AS ticket_date,
                 ticket_type_origin,
                 key                 AS ticket_key
             FROM {tgt_layer}.gestao.jira_tickets
-        )
-        SELECT
-            c.day_key,
-            c.org_cd,
-            c.org_name,
-            c.org_short_name,
-            c.course_cd,
-            c.course_name,
-            c.edition,
-            c.is_latest_edition,
-            c.edition_type,
-            t.ticket_type_origin,
-            t.ticket_key
-        FROM courses c
-        LEFT JOIN tickets_daily t
-            ON c.day_key = t.ticket_date
+        ) t ON fce.day_key = t.ticket_date
     """
 
 
@@ -269,7 +254,7 @@ def _enrollments_vs_certificates_agg_sql(tgt_layer: str) -> str:
             dce.edition,
             CASE
                 WHEN fc.certificate_cd IS NOT NULL
-                THEN date_diff('day', fce.course_enrollment_start_date, fc.certificate_issue_date)
+                THEN date_diff(DAY, fce.course_enrollment_start_date, fc.certificate_issue_date)
                 ELSE -1
             END                             AS nr_days_to_conclusion,
             fc.certificate_cd,
