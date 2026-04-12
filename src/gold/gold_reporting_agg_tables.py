@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 from typing import Callable
 from nau_analytics_data_product_utils_lib import start_iceberg_session, get_required_env  # type: ignore
@@ -532,9 +533,28 @@ def main():
     tgt_layer    = f"gold{ENVIRONMENT}"
     tgt_pipeline = "entidades"
 
+    # Optional: comma-separated list of table names to reprocess.
+    # If unset, all tables in AGG_TABLES are processed.
+    # Example: TABLES_TO_RUN=certificates_agg,tickets_vs_courses_agg
+    tables_to_run_env = os.environ.get("TABLES_TO_RUN", "").strip()
+    if tables_to_run_env:
+        requested = {t.strip() for t in tables_to_run_env.split(",")}
+        valid_names = {agg.name for agg in AGG_TABLES}
+        unknown = requested - valid_names
+        if unknown:
+            raise ValueError(
+                f"Unknown table(s) in TABLES_TO_RUN: {unknown}. "
+                f"Valid options are: {valid_names}"
+            )
+        tables = [agg for agg in AGG_TABLES if agg.name in requested]
+        logging.info(f"TABLES_TO_RUN is set — processing {len(tables)} table(s): {requested}")
+    else:
+        tables = AGG_TABLES
+        logging.info(f"TABLES_TO_RUN not set — processing all {len(tables)} table(s).")
+
     current_timestamp = spark.sql("SELECT current_timestamp() as c").first()["c"]
 
-    for agg in AGG_TABLES:
+    for agg in tables:
         logging.info(f"--- Starting rebuild: {agg.name} ---")
 
         # Each agg table tracks its own last execution timestamp so they can
