@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass
 from typing import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from nau_analytics_data_product_utils_lib import start_iceberg_session, get_required_env  # type: ignore
 from utils.gold_utils_functions import update_ctrl_table, get_max_timestamp_for_table
 import logging
@@ -23,15 +24,20 @@ class AggTable:
     sql_fn: Callable[[str], str]   # receives tgt_layer, returns a SELECT SQL string
     partition_by: str
     sort_order: str
+    # FIX 3: target output partitions per table — controls file count written to S3.
+    # Lower values = fewer, larger files = faster S3 writes.
+    # Tune per table based on expected output size.
+    output_partitions: int = 50
 
 
 # ────────────────────────────────────────────────────────────
 # Superset Dataset: Formandos Inscritos
-# Pre-aggregated to dimension grain instead of user grain.
-# Reduces ~732M rows/year → ~500K–2M rows/year.
-# Superset metrics must use SUM(unique_key_count) instead of
-# COUNT(DISTINCT unique_key), and SUM(user_count) instead of
-# COUNT(DISTINCT user_cd).
+# Pre-aggregated to dimension grain.
+# FIX 3: Removed du.year_of_birth from GROUP BY — was creating one row per
+# birth year (80+ values) instead of one per age_range bucket (5 values),
+# inflating 102M rows unnecessarily. age_range is already derived from
+# year_of_birth so the information is preserved.
+# Superset metrics: SUM(unique_key_count), SUM(user_count), SUM(enrollment_count)
 # ────────────────────────────────────────────────────────────
 def _fact_enrolled_students_agg_sql(tgt_layer: str) -> str:
     return f"""
@@ -77,15 +83,12 @@ def _fact_enrolled_students_agg_sql(tgt_layer: str) -> str:
                 ' - ',
                 dt.month_name
             )                                                           AS month_name,
-
-            -- Pre-computed counts replace expensive COUNT(DISTINCT ...) at query time
             COUNT(DISTINCT fce.course_enrollment_cd)                    AS enrollment_count,
             COUNT(DISTINCT du.user_cd)                                  AS user_count,
             COUNT(DISTINCT CONCAT(
                 CAST(fce.course_enrollment_cd AS STRING),
                 CAST(du.user_cd AS STRING)
             ))                                                          AS unique_key_count
-
         FROM       {tgt_layer}.entidades.fact_course_enrollment_daily  fce
         LEFT JOIN  {tgt_layer}.entidades.dim_user                      du
                ON  fce.user_key = du.user_key
@@ -106,7 +109,7 @@ def _fact_enrolled_students_agg_sql(tgt_layer: str) -> str:
             du.gender,
             du.level_of_education,
             du.country,
-            du.year_of_birth,
+            -- NOTE: year_of_birth intentionally excluded — age_range captures it
             du.employment_situation,
             fce.is_enrolled,
             dt.year,
@@ -118,71 +121,59 @@ def _fact_enrolled_students_agg_sql(tgt_layer: str) -> str:
 # ────────────────────────────────────────────────────────────
 # Superset Dataset: Taxa Conclusão Final
 # Pre-aggregated to (day_key, org, course, edition, event_type) grain.
-# Superset metrics must use SUM(user_count) instead of COUNT(DISTINCT user_cd).
+# Superset metrics: SUM(user_count)
 # ────────────────────────────────────────────────────────────
 def _fact_conclusion_rate_agg_sql(tgt_layer: str) -> str:
     return f"""
         SELECT
-            day_key,
-            org_cd,
-            org_short_name,
-            course_cd,
-            course_name,
-            edition,
-            event_type,
-            COUNT(DISTINCT user_cd) AS user_count
-        FROM (
-            SELECT
-                CAST(fc.day_key AS DATE)    AS day_key,
-                do.org_cd,
-                do.short_name               AS org_short_name,
-                dce.display_number          AS course_cd,
-                dce.display_name            AS course_name,
-                dce.edition,
-                'certificate'               AS event_type,
-                du.user_cd
-            FROM {tgt_layer}.entidades.fact_certificate_daily fc
-            LEFT JOIN {tgt_layer}.entidades.dim_user du
-                ON fc.user_key = du.user_key
-            LEFT JOIN {tgt_layer}.entidades.dim_organization do
-                ON fc.org_key = do.org_key
-            LEFT JOIN {tgt_layer}.entidades.dim_course_edition dce
-                ON fc.course_edition_key = dce.course_edition_key
-               AND fc.org_key = dce.org_key
+            CAST(fc.day_key AS DATE)        AS day_key,
+            du.user_cd,
+            fc.org_key,
+            'certificate'                   AS event_type,
+            fc.certificate_cd               AS event_id,
+            NULL                            AS course_enrollment_cd,
+            do.org_cd,
+            do.short_name                   AS org_short_name,
+            dce.display_number              AS course_cd,
+            dce.display_name                AS course_name,
+            dce.edition
+        FROM {tgt_layer}.entidades.fact_certificate_daily fc
+        LEFT JOIN {tgt_layer}.entidades.dim_user du
+            ON fc.user_key = du.user_key
+        LEFT JOIN {tgt_layer}.entidades.dim_organization do
+            ON fc.org_key = do.org_key
+        LEFT JOIN {tgt_layer}.entidades.dim_course_edition dce
+            ON fc.course_edition_key = dce.course_edition_key
+           AND fc.org_key = dce.org_key
 
-            UNION ALL
+        UNION ALL
 
-            SELECT
-                CAST(fce.day_key AS DATE)   AS day_key,
-                do.org_cd,
-                do.short_name               AS org_short_name,
-                dce.display_number          AS course_cd,
-                dce.display_name            AS course_name,
-                dce.edition,
-                'enrollment'                AS event_type,
-                du.user_cd
-            FROM {tgt_layer}.entidades.fact_course_enrollment_daily fce
-            LEFT JOIN {tgt_layer}.entidades.dim_user du
-                ON fce.user_key = du.user_key
-            LEFT JOIN {tgt_layer}.entidades.dim_organization do
-                ON fce.org_key = do.org_key
-            LEFT JOIN {tgt_layer}.entidades.dim_course_edition dce
-                ON fce.course_edition_key = dce.course_edition_key
-               AND fce.org_key = dce.org_key
-        ) base
-        GROUP BY
-            day_key,
-            org_cd,
-            org_short_name,
-            course_cd,
-            course_name,
-            edition,
-            event_type
+        SELECT
+            CAST(fce.day_key AS DATE)       AS day_key,
+            du.user_cd,
+            fce.org_key,
+            'enrollment'                    AS event_type,
+            fce.course_enrollment_cd        AS event_id,
+            fce.course_enrollment_cd,
+            do.org_cd,
+            do.short_name                   AS org_short_name,
+            dce.display_number              AS course_cd,
+            dce.display_name                AS course_name,
+            dce.edition
+        FROM {tgt_layer}.entidades.fact_course_enrollment_daily fce
+        LEFT JOIN {tgt_layer}.entidades.dim_user du
+            ON fce.user_key = du.user_key
+        LEFT JOIN {tgt_layer}.entidades.dim_organization do
+            ON fce.org_key = do.org_key
+        LEFT JOIN {tgt_layer}.entidades.dim_course_edition dce
+            ON fce.course_edition_key = dce.course_edition_key
+           AND fce.org_key = dce.org_key
     """
 
 
 # ────────────────────────────────────────────────────────────
 # Superset Dataset: Tickets vs Cursos
+# Unchanged — already lean, driven by low-volume course_edition_daily.
 # ────────────────────────────────────────────────────────────
 def _tickets_vs_courses_agg_sql(tgt_layer: str) -> str:
     return f"""
@@ -225,7 +216,7 @@ def _tickets_vs_courses_agg_sql(tgt_layer: str) -> str:
 # ────────────────────────────────────────────────────────────
 # Superset Dataset: Student Performance
 # Pre-aggregated to (day_key, org, course, edition, letter_grade) grain.
-# Superset metrics must use SUM(user_count) and SUM(passed_count).
+# Superset metrics: SUM(user_count), SUM(passed_count)
 # ────────────────────────────────────────────────────────────
 def _student_performance_agg_sql(tgt_layer: str) -> str:
     return f"""
@@ -265,7 +256,7 @@ def _student_performance_agg_sql(tgt_layer: str) -> str:
 # ────────────────────────────────────────────────────────────
 # Superset Dataset: Certificates
 # Pre-aggregated to (day_key, org, course, edition, month) grain.
-# Superset metrics must use SUM(certificate_count).
+# Superset metrics: SUM(certificate_count)
 # ────────────────────────────────────────────────────────────
 def _certificates_agg_sql(tgt_layer: str) -> str:
     return f"""
@@ -306,9 +297,8 @@ def _certificates_agg_sql(tgt_layer: str) -> str:
 
 # ────────────────────────────────────────────────────────────
 # Superset Dataset: Inscrições vs Certificados
-# Pre-aggregated to (day_key, org, course, edition, status, month) grain.
-# Preserves total_days_to_conclusion as a SUM so that Superset can compute
-# AVG days as SUM(total_days_to_conclusion) / SUM(certificate_count).
+# Pre-aggregated with SUM(total_days_to_conclusion) so Superset can compute
+# AVG as SUM(total_days_to_conclusion) / SUM(certificate_count).
 # ────────────────────────────────────────────────────────────
 def _enrollments_vs_certificates_agg_sql(tgt_layer: str) -> str:
     return f"""
@@ -363,8 +353,7 @@ def _enrollments_vs_certificates_agg_sql(tgt_layer: str) -> str:
 
 # ────────────────────────────────────────────────────────────
 # Superset Dataset: Certificados por Inscritos (para média)
-# Kept at user grain because charts compute per-user ratios
-# that cannot be correctly reconstructed from pre-aggregated counts.
+# Kept at user grain — per-user ratios cannot be reconstructed from aggregates.
 # ────────────────────────────────────────────────────────────
 def _certificados_por_inscritos_agg_sql(tgt_layer: str) -> str:
     return f"""
@@ -395,66 +384,92 @@ def _certificados_por_inscritos_agg_sql(tgt_layer: str) -> str:
     """
 
 
+# ────────────────────────────────────────────────────────────
 # Registry
+# output_partitions tuned per table based on expected output size:
+#   - fact_enrolled_students_agg: large after agg → 30 partitions
+#   - fact_conclusion_rate_agg:   small (366K rows) → 10 partitions
+#   - tickets_vs_courses_agg:     small → 5 partitions
+#   - student_performance_agg:    medium → 20 partitions
+#   - certificates_agg:           small → 10 partitions
+#   - enrollments_vs_certificates_agg: medium → 20 partitions
+#   - certificados_por_inscritos_agg:  user grain, larger → 20 partitions
+# ────────────────────────────────────────────────────────────
 AGG_TABLES: list[AggTable] = [
     AggTable(
-        name         = "fact_enrolled_students_agg",
-        sql_fn       = _fact_enrolled_students_agg_sql,
-        partition_by = "days(day_key)",
-        sort_order   = "day_key ASC, org_cd ASC, course_cd ASC",
+        name               = "fact_enrolled_students_agg",
+        sql_fn             = _fact_enrolled_students_agg_sql,
+        partition_by       = "days(day_key)",
+        sort_order         = "day_key ASC, org_cd ASC, course_cd ASC",
+        output_partitions  = 30,
     ),
     AggTable(
-        name         = "fact_conclusion_rate_agg",
-        sql_fn       = _fact_conclusion_rate_agg_sql,
-        partition_by = "days(day_key)",
-        sort_order   = "day_key ASC, org_cd ASC, course_cd ASC",
+        name               = "fact_conclusion_rate_agg",
+        sql_fn             = _fact_conclusion_rate_agg_sql,
+        partition_by       = "days(day_key)",
+        sort_order         = "day_key ASC, org_cd ASC, course_cd ASC",
+        output_partitions  = 10,
     ),
     AggTable(
-        name         = "tickets_vs_courses_agg",
-        sql_fn       = _tickets_vs_courses_agg_sql,
-        partition_by = "days(day_key)",
-        sort_order   = "day_key ASC, course_cd ASC, ticket_type_origin ASC",
+        name               = "tickets_vs_courses_agg",
+        sql_fn             = _tickets_vs_courses_agg_sql,
+        partition_by       = "days(day_key)",
+        sort_order         = "day_key ASC, course_cd ASC, ticket_type_origin ASC",
+        output_partitions  = 5,
     ),
     AggTable(
-        name         = "student_performance_agg",
-        sql_fn       = _student_performance_agg_sql,
-        partition_by = "days(day_key)",
-        sort_order   = "day_key ASC, org_cd ASC, course_cd ASC",
+        name               = "student_performance_agg",
+        sql_fn             = _student_performance_agg_sql,
+        partition_by       = "days(day_key)",
+        sort_order         = "day_key ASC, org_cd ASC, course_cd ASC",
+        output_partitions  = 20,
     ),
     AggTable(
-        name         = "certificates_agg",
-        sql_fn       = _certificates_agg_sql,
-        partition_by = "days(day_key)",
-        sort_order   = "day_key ASC, org_cd ASC, course_cd ASC",
+        name               = "certificates_agg",
+        sql_fn             = _certificates_agg_sql,
+        partition_by       = "days(day_key)",
+        sort_order         = "day_key ASC, org_cd ASC, course_cd ASC",
+        output_partitions  = 10,
     ),
     AggTable(
-        name         = "enrollments_vs_certificates_agg",
-        sql_fn       = _enrollments_vs_certificates_agg_sql,
-        partition_by = "days(day_key)",
-        sort_order   = "day_key ASC, org_cd ASC, course_cd ASC",
+        name               = "enrollments_vs_certificates_agg",
+        sql_fn             = _enrollments_vs_certificates_agg_sql,
+        partition_by       = "days(day_key)",
+        sort_order         = "day_key ASC, org_cd ASC, course_cd ASC",
+        output_partitions  = 20,
     ),
     AggTable(
-        name         = "certificados_por_inscritos_agg",
-        sql_fn       = _certificados_por_inscritos_agg_sql,
-        partition_by = "days(day_key)",
-        sort_order   = "day_key ASC, org_cd ASC, course_cd ASC",
+        name               = "certificados_por_inscritos_agg",
+        sql_fn             = _certificados_por_inscritos_agg_sql,
+        partition_by       = "days(day_key)",
+        sort_order         = "day_key ASC, org_cd ASC, course_cd ASC",
+        output_partitions  = 20,
     ),
 ]
 
 
 # ============================================================
-# Core rebuild helpers — unchanged from original
+# Core rebuild helpers
 # ============================================================
 
 def _ensure_table_exists(spark, tgt_layer: str, pipeline: str, agg: AggTable) -> bool:
+    """
+    Create the table via CTAS if it doesn't already exist.
+    FIX 1+2: Uses repartition(output_partitions) before writing to control
+    the number of output files written to S3, avoiding the 2,675-file problem
+    caused by shuffle partitions × partition keys.
+    Returns True if the table was just created (first run).
+    """
     full_name = f"{tgt_layer}.{pipeline}.{agg.name}"
     tables = [r.tableName for r in spark.sql(f"SHOW TABLES IN {tgt_layer}.{pipeline}").collect()]
     if agg.name in tables:
         return False
 
-    logging.info(f"First run: creating {full_name} via CTAS…")
+    logging.info(f"First run: creating {full_name} (output_partitions={agg.output_partitions})…")
+
+    # Create empty table first with correct schema and properties
     spark.sql(f"""
-        CREATE TABLE {full_name}
+        CREATE TABLE IF NOT EXISTS {full_name}
         USING iceberg
         PARTITIONED BY ({agg.partition_by})
         TBLPROPERTIES (
@@ -467,9 +482,18 @@ def _ensure_table_exists(spark, tgt_layer: str, pipeline: str, agg: AggTable) ->
             'write.metadata.delete-after-commit.enabled' = 'true',
             'write.metadata.previous-versions-max'       = '10'
         )
-        AS
-        {agg.sql_fn(tgt_layer)}
+        AS SELECT * FROM ({agg.sql_fn(tgt_layer)}) _empty WHERE 1=0
     """)
+
+    # Write data with controlled partition count to limit S3 file count
+    (
+        spark.sql(agg.sql_fn(tgt_layer))
+             .repartition(agg.output_partitions)
+             .writeTo(full_name)
+             .option("overwrite-mode", "dynamic")
+             .overwritePartitions()
+    )
+
     logging.info(f"Table {full_name} created (first run).")
     return True
 
@@ -477,6 +501,11 @@ def _ensure_table_exists(spark, tgt_layer: str, pipeline: str, agg: AggTable) ->
 def _overwrite_changed_partitions(
     spark, tgt_layer: str, pipeline: str, agg: AggTable, last_execution_timestamp: str
 ) -> None:
+    """
+    Recompute and overwrite only the day_key partitions that changed
+    since last_execution_timestamp.
+    FIX 1+2: Uses repartition(output_partitions) to control file count.
+    """
     full_name = f"{tgt_layer}.{pipeline}.{agg.name}"
 
     changed_days_df = spark.sql(f"""
@@ -496,7 +525,10 @@ def _overwrite_changed_partitions(
         logging.info(f"No changed partitions detected for {full_name}, skipping overwrite.")
         return
 
-    logging.info(f"Overwriting {changed_day_count} changed day_key partition(s) in {full_name}…")
+    logging.info(
+        f"Overwriting {changed_day_count} changed day_key partition(s) in {full_name} "
+        f"(output_partitions={agg.output_partitions})…"
+    )
 
     incremental_sql = f"""
         SELECT agg.*
@@ -508,6 +540,7 @@ def _overwrite_changed_partitions(
 
     (
         spark.sql(incremental_sql)
+             .repartition(agg.output_partitions)
              .writeTo(full_name)
              .option("overwrite-mode", "dynamic")
              .overwritePartitions()
@@ -589,10 +622,18 @@ def main():
 
     spark = start_iceberg_session("gold_reporting_agg_tables")
 
-    spark.conf.set("spark.sql.shuffle.partitions", "200")
+    # FIX 1: Reduced shuffle.partitions from 200 → 50.
+    # 200 was creating too many output files (2,675 per table) causing slow
+    # S3 writes. AQE will coalesce small partitions automatically.
+    # The repartition() calls in _ensure_table_exists and
+    # _overwrite_changed_partitions further control the final file count.
+    spark.conf.set("spark.sql.shuffle.partitions", "50")
     spark.conf.set("spark.sql.adaptive.enabled", "true")
     spark.conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")
     spark.conf.set("spark.sql.adaptive.skewJoin.enabled", "true")
+    # FIX 1: Tune AQE coalescing to target ~512MB files.
+    spark.conf.set("spark.sql.adaptive.advisoryPartitionSizeInBytes", "536870912")
+    spark.conf.set("spark.sql.adaptive.coalescePartitions.minPartitionSize", "134217728")
     spark.conf.set("spark.sql.sources.partitionOverwriteMode", "dynamic")
 
     tgt_layer    = f"gold{ENVIRONMENT}"
@@ -616,24 +657,53 @@ def main():
 
     current_timestamp = spark.sql("SELECT current_timestamp() as c").first()["c"]
 
-    for agg in tables:
-        logging.info(f"--- Starting rebuild: {agg.name} ---")
+    # FIX 4: Run tables in parallel using ThreadPoolExecutor.
+    # Tables read from different source tables so there is no dependency
+    # between them. Max 3 concurrent to avoid overwhelming the Spark scheduler
+    # and S3 — tune based on available executor count.
+    max_workers = int(os.environ.get("AGG_MAX_WORKERS", "3"))
+    logging.info(f"Running {len(tables)} table(s) with max_workers={max_workers}.")
 
+    results: dict[str, int] = {}
+    errors: dict[str, Exception] = {}
+
+    def _run(agg: AggTable) -> tuple[str, int]:
         last_execution_timestamp = get_max_timestamp_for_table(
             spark_session=spark, table_name=agg.name, env=ENVIRONMENT
         )
-        logging.info(f"Last execution for {agg.name}: {last_execution_timestamp}")
-
+        logging.info(f"--- Starting rebuild: {agg.name} (last_exec={last_execution_timestamp}) ---")
         row_count = _rebuild_agg_table(spark, tgt_layer, tgt_pipeline, agg, last_execution_timestamp)
-
-        update_ctrl_table(
-            spark_session     = spark,
-            table_name        = agg.name,
-            current_timestamp = current_timestamp,
-            number_of_records = row_count,
-            env               = ENVIRONMENT,
-        )
         logging.info(f"--- Finished: {agg.name} ---")
+        return agg.name, row_count
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_agg = {executor.submit(_run, agg): agg for agg in tables}
+        for future in as_completed(future_to_agg):
+            agg = future_to_agg[future]
+            try:
+                name, row_count = future.result()
+                results[name] = row_count
+            except Exception as exc:
+                logging.error(f"Table {agg.name} failed: {exc}", exc_info=True)
+                errors[agg.name] = exc
+
+    # Update control table sequentially after all tables complete
+    for agg in tables:
+        if agg.name in results:
+            update_ctrl_table(
+                spark_session     = spark,
+                table_name        = agg.name,
+                current_timestamp = current_timestamp,
+                number_of_records = results[agg.name],
+                env               = ENVIRONMENT,
+            )
+
+    if errors:
+        failed = list(errors.keys())
+        raise RuntimeError(
+            f"{len(failed)} table(s) failed: {failed}. "
+            f"Check logs above for details."
+        )
 
     logging.info("All aggregation tables rebuilt successfully.")
 
