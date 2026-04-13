@@ -37,137 +37,185 @@ class AggTable:
 # birth year (80+ values) instead of one per age_range bucket (5 values),
 # inflating 102M rows unnecessarily. age_range is already derived from
 # year_of_birth so the information is preserved.
+# FIX 5 (NEW): The age_range CASE expression that references
+# du.year_of_birth must appear in the GROUP BY — Spark does not allow
+# non-aggregated columns even via a derived expression.  We use a CTE to
+# compute the scalar columns first, then GROUP BY the alias.
 # Superset metrics: SUM(unique_key_count), SUM(user_count), SUM(enrollment_count)
 # ────────────────────────────────────────────────────────────
 def _fact_enrolled_students_agg_sql(tgt_layer: str) -> str:
     return f"""
+        WITH base AS (
+            SELECT
+                fce.day_key,
+                dorg.org_cd,
+                dorg.short_name                                             AS org_short_name,
+                dce.display_number                                          AS course_cd,
+                dce.display_name                                            AS course_name,
+                dce.edition,
+                CASE
+                    WHEN du.gender = 'm' THEN 'Male'
+                    WHEN du.gender = 'f' THEN 'Female'
+                    WHEN du.gender = 'o' THEN 'Other'
+                    ELSE 'N/A'
+                END                                                         AS gender,
+                du.level_of_education,
+                du.country,
+                CASE
+                    WHEN du.year_of_birth IS NULL                                    THEN 'N/A'
+                    WHEN year(CURRENT_DATE) - du.year_of_birth < 18                 THEN 'Menor 18'
+                    WHEN year(CURRENT_DATE) - du.year_of_birth BETWEEN 18 AND 29    THEN '18-29'
+                    WHEN year(CURRENT_DATE) - du.year_of_birth BETWEEN 30 AND 54    THEN '30-54'
+                    ELSE '55+'
+                END                                                         AS age_range,
+                CASE
+                    WHEN du.level_of_education IS NULL  THEN 'N/A'
+                    WHEN du.level_of_education = 'm'    THEN 'Master''s degree'
+                    WHEN du.level_of_education = 'jhs'  THEN 'Junior High School'
+                    WHEN du.level_of_education = 'hs'   THEN 'High School'
+                    WHEN du.level_of_education = 'b'    THEN 'Bachelor''s degree'
+                    WHEN du.level_of_education = 'p'    THEN 'PhD / Doctorate'
+                    WHEN du.level_of_education = 'a'    THEN 'Associate degree'
+                    ELSE 'Other'
+                END                                                         AS escolaridade,
+                CASE WHEN du.employment_situation IS NULL THEN 'N/A'
+                     ELSE du.employment_situation
+                END                                                         AS employment_situation,
+                fce.is_enrolled,
+                CONCAT(
+                    CAST(dt.year AS STRING),
+                    lpad(CAST(dt.month AS STRING), 2, '0'),
+                    ' - ',
+                    dt.month_name
+                )                                                           AS month_name,
+                fce.course_enrollment_cd,
+                du.user_cd
+            FROM       {tgt_layer}.entidades.fact_course_enrollment_daily  fce
+            LEFT JOIN  {tgt_layer}.entidades.dim_user                      du
+                   ON  fce.user_key = du.user_key
+            LEFT JOIN  {tgt_layer}.entidades.dim_organization              dorg
+                   ON  fce.org_key  = dorg.org_key
+            LEFT JOIN  {tgt_layer}.entidades.dim_course_edition            dce
+                   ON  fce.course_edition_key = dce.course_edition_key
+                  AND  fce.org_key            = dce.org_key
+            JOIN       {tgt_layer}.entidades.dim_time                      dt
+                   ON  fce.day_key = dt.date
+        )
         SELECT
-            fce.day_key,
-            dorg.org_cd,
-            dorg.short_name                                             AS org_short_name,
-            dce.display_number                                          AS course_cd,
-            dce.display_name                                            AS course_name,
-            dce.edition,
-            CASE
-                WHEN du.gender = 'm' THEN 'Male'
-                WHEN du.gender = 'f' THEN 'Female'
-                WHEN du.gender = 'o' THEN 'Other'
-                ELSE 'N/A'
-            END                                                         AS gender,
-            du.level_of_education,
-            du.country,
-            CASE
-                WHEN du.year_of_birth IS NULL                                    THEN 'N/A'
-                WHEN year(CURRENT_DATE) - du.year_of_birth < 18                 THEN 'Menor 18'
-                WHEN year(CURRENT_DATE) - du.year_of_birth BETWEEN 18 AND 29    THEN '18-29'
-                WHEN year(CURRENT_DATE) - du.year_of_birth BETWEEN 30 AND 54    THEN '30-54'
-                ELSE '55+'
-            END                                                         AS age_range,
-            CASE
-                WHEN du.level_of_education IS NULL  THEN 'N/A'
-                WHEN du.level_of_education = 'm'    THEN 'Master''s degree'
-                WHEN du.level_of_education = 'jhs'  THEN 'Junior High School'
-                WHEN du.level_of_education = 'hs'   THEN 'High School'
-                WHEN du.level_of_education = 'b'    THEN 'Bachelor''s degree'
-                WHEN du.level_of_education = 'p'    THEN 'PhD / Doctorate'
-                WHEN du.level_of_education = 'a'    THEN 'Associate degree'
-                ELSE 'Other'
-            END                                                         AS escolaridade,
-            CASE WHEN du.employment_situation IS NULL THEN 'N/A'
-                 ELSE du.employment_situation
-            END                                                         AS employment_situation,
-            fce.is_enrolled,
-            CONCAT(
-                CAST(dt.year AS STRING),
-                lpad(CAST(dt.month AS STRING), 2, '0'),
-                ' - ',
-                dt.month_name
-            )                                                           AS month_name,
-            COUNT(DISTINCT fce.course_enrollment_cd)                    AS enrollment_count,
-            COUNT(DISTINCT du.user_cd)                                  AS user_count,
+            day_key,
+            org_cd,
+            org_short_name,
+            course_cd,
+            course_name,
+            edition,
+            gender,
+            level_of_education,
+            country,
+            age_range,
+            escolaridade,
+            employment_situation,
+            is_enrolled,
+            month_name,
+            COUNT(DISTINCT course_enrollment_cd)                    AS enrollment_count,
+            COUNT(DISTINCT user_cd)                                 AS user_count,
             COUNT(DISTINCT CONCAT(
-                CAST(fce.course_enrollment_cd AS STRING),
-                CAST(du.user_cd AS STRING)
-            ))                                                          AS unique_key_count
-        FROM       {tgt_layer}.entidades.fact_course_enrollment_daily  fce
-        LEFT JOIN  {tgt_layer}.entidades.dim_user                      du
-               ON  fce.user_key = du.user_key
-        LEFT JOIN  {tgt_layer}.entidades.dim_organization              dorg
-               ON  fce.org_key  = dorg.org_key
-        LEFT JOIN  {tgt_layer}.entidades.dim_course_edition            dce
-               ON  fce.course_edition_key = dce.course_edition_key
-              AND  fce.org_key            = dce.org_key
-        JOIN       {tgt_layer}.entidades.dim_time                      dt
-               ON  fce.day_key = dt.date
+                CAST(course_enrollment_cd AS STRING),
+                CAST(user_cd AS STRING)
+            ))                                                      AS unique_key_count
+        FROM base
         GROUP BY
-            fce.day_key,
-            dorg.org_cd,
-            dorg.short_name,
-            dce.display_number,
-            dce.display_name,
-            dce.edition,
-            du.gender,
-            du.level_of_education,
-            du.country,
-            -- NOTE: year_of_birth intentionally excluded — age_range captures it
-            du.employment_situation,
-            fce.is_enrolled,
-            dt.year,
-            dt.month,
-            dt.month_name
+            day_key,
+            org_cd,
+            org_short_name,
+            course_cd,
+            course_name,
+            edition,
+            gender,
+            level_of_education,
+            country,
+            age_range,
+            escolaridade,
+            employment_situation,
+            is_enrolled,
+            month_name
     """
 
 
 # ────────────────────────────────────────────────────────────
 # Superset Dataset: Taxa Conclusão Final
-# Pre-aggregated to (day_key, org, course, edition, event_type) grain.
-# Superset metrics: SUM(user_count)
+# FIX 6 (NEW): The original query was a raw UNION ALL with NO aggregation,
+# producing the full row count of fact_certificate_daily +
+# fact_course_enrollment_daily (potentially hundreds of millions of rows).
+# Combined with repartition(10), this concentrated massive data per
+# partition, causing repeated executor OOM kills and cascading shuffle
+# fetch failures — the query never completed in 4+ hours.
+#
+# The Superset metric is SUM(user_count), so the data can be pre-aggregated
+# to (day_key, org, course, edition, event_type) grain.  This reduces
+# output from hundreds of millions of rows to a few thousand, eliminating
+# the OOM entirely.
 # ────────────────────────────────────────────────────────────
 def _fact_conclusion_rate_agg_sql(tgt_layer: str) -> str:
     return f"""
-        SELECT
-            CAST(fc.day_key AS DATE)        AS day_key,
-            du.user_cd,
-            fc.org_key,
-            'certificate'                   AS event_type,
-            fc.certificate_cd               AS event_id,
-            NULL                            AS course_enrollment_cd,
-            do.org_cd,
-            do.short_name                   AS org_short_name,
-            dce.display_number              AS course_cd,
-            dce.display_name                AS course_name,
-            dce.edition
-        FROM {tgt_layer}.entidades.fact_certificate_daily fc
-        LEFT JOIN {tgt_layer}.entidades.dim_user du
-            ON fc.user_key = du.user_key
-        LEFT JOIN {tgt_layer}.entidades.dim_organization do
-            ON fc.org_key = do.org_key
-        LEFT JOIN {tgt_layer}.entidades.dim_course_edition dce
-            ON fc.course_edition_key = dce.course_edition_key
-           AND fc.org_key = dce.org_key
+        WITH events AS (
+            SELECT
+                CAST(fc.day_key AS DATE)        AS day_key,
+                du.user_cd,
+                fc.org_key,
+                'certificate'                   AS event_type,
+                do.org_cd,
+                do.short_name                   AS org_short_name,
+                dce.display_number              AS course_cd,
+                dce.display_name                AS course_name,
+                dce.edition
+            FROM {tgt_layer}.entidades.fact_certificate_daily fc
+            LEFT JOIN {tgt_layer}.entidades.dim_user du
+                ON fc.user_key = du.user_key
+            LEFT JOIN {tgt_layer}.entidades.dim_organization do
+                ON fc.org_key = do.org_key
+            LEFT JOIN {tgt_layer}.entidades.dim_course_edition dce
+                ON fc.course_edition_key = dce.course_edition_key
+               AND fc.org_key = dce.org_key
 
-        UNION ALL
+            UNION ALL
 
+            SELECT
+                CAST(fce.day_key AS DATE)       AS day_key,
+                du.user_cd,
+                fce.org_key,
+                'enrollment'                    AS event_type,
+                do.org_cd,
+                do.short_name                   AS org_short_name,
+                dce.display_number              AS course_cd,
+                dce.display_name                AS course_name,
+                dce.edition
+            FROM {tgt_layer}.entidades.fact_course_enrollment_daily fce
+            LEFT JOIN {tgt_layer}.entidades.dim_user du
+                ON fce.user_key = du.user_key
+            LEFT JOIN {tgt_layer}.entidades.dim_organization do
+                ON fce.org_key = do.org_key
+            LEFT JOIN {tgt_layer}.entidades.dim_course_edition dce
+                ON fce.course_edition_key = dce.course_edition_key
+               AND fce.org_key = dce.org_key
+        )
         SELECT
-            CAST(fce.day_key AS DATE)       AS day_key,
-            du.user_cd,
-            fce.org_key,
-            'enrollment'                    AS event_type,
-            fce.course_enrollment_cd        AS event_id,
-            fce.course_enrollment_cd,
-            do.org_cd,
-            do.short_name                   AS org_short_name,
-            dce.display_number              AS course_cd,
-            dce.display_name                AS course_name,
-            dce.edition
-        FROM {tgt_layer}.entidades.fact_course_enrollment_daily fce
-        LEFT JOIN {tgt_layer}.entidades.dim_user du
-            ON fce.user_key = du.user_key
-        LEFT JOIN {tgt_layer}.entidades.dim_organization do
-            ON fce.org_key = do.org_key
-        LEFT JOIN {tgt_layer}.entidades.dim_course_edition dce
-            ON fce.course_edition_key = dce.course_edition_key
-           AND fce.org_key = dce.org_key
+            day_key,
+            org_cd,
+            org_short_name,
+            course_cd,
+            course_name,
+            edition,
+            event_type,
+            COUNT(DISTINCT user_cd)             AS user_count
+        FROM events
+        GROUP BY
+            day_key,
+            org_cd,
+            org_short_name,
+            course_cd,
+            course_name,
+            edition,
+            event_type
     """
 
 
@@ -388,7 +436,7 @@ def _certificados_por_inscritos_agg_sql(tgt_layer: str) -> str:
 # Registry
 # output_partitions tuned per table based on expected output size:
 #   - fact_enrolled_students_agg: large after agg → 30 partitions
-#   - fact_conclusion_rate_agg:   small (366K rows) → 10 partitions
+#   - fact_conclusion_rate_agg:   now aggregated, small → 10 partitions
 #   - tickets_vs_courses_agg:     small → 5 partitions
 #   - student_performance_agg:    medium → 20 partitions
 #   - certificates_agg:           small → 10 partitions
@@ -605,7 +653,16 @@ def _rebuild_agg_table(
     if not first_run:
         _overwrite_changed_partitions(spark, tgt_layer, pipeline, agg, last_execution_timestamp)
 
-    _run_iceberg_maintenance(spark, tgt_layer, full_name, agg.sort_order)
+    # FIX 7 (NEW): Skip Iceberg maintenance on first run.
+    # On a freshly written table the files are already optimally sized from
+    # repartition(), so compaction is wasted work — it adds 2-5 min per table
+    # and competes with still-running writes from other parallel threads.
+    if not first_run:
+        _run_iceberg_maintenance(spark, tgt_layer, full_name, agg.sort_order)
+    else:
+        logging.info(
+            f"Skipping Iceberg maintenance for {full_name} (first run — files already optimal)."
+        )
 
     row_count = _get_row_count_from_metadata(spark, tgt_layer, full_name)
     logging.info(f"Table {full_name} has {row_count:,} total rows.")
@@ -657,11 +714,14 @@ def main():
 
     current_timestamp = spark.sql("SELECT current_timestamp() as c").first()["c"]
 
-    # FIX 4: Run tables in parallel using ThreadPoolExecutor.
-    # Tables read from different source tables so there is no dependency
-    # between them. Max 3 concurrent to avoid overwhelming the Spark scheduler
-    # and S3 — tune based on available executor count.
-    max_workers = int(os.environ.get("AGG_MAX_WORKERS", "3"))
+    # FIX 4 (UPDATED): Default max_workers lowered from 3 → 1.
+    # Running heavy tables in parallel on a shared Spark session causes
+    # executor OOM kills and cascading shuffle fetch failures when multiple
+    # large shuffles compete for the same executor memory.  Sequential
+    # execution (max_workers=1) is safer for first-run / backfill.
+    # For incremental runs where only a few partitions change per table,
+    # set AGG_MAX_WORKERS=3 via env var to re-enable parallelism.
+    max_workers = int(os.environ.get("AGG_MAX_WORKERS", "1"))
     logging.info(f"Running {len(tables)} table(s) with max_workers={max_workers}.")
 
     results: dict[str, int] = {}
