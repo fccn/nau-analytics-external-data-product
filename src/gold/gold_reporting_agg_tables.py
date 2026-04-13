@@ -25,19 +25,23 @@ class AggTable:
     sort_order: str
 
 
+# ────────────────────────────────────────────────────────────
 # Superset Dataset: Formandos Inscritos
+# Pre-aggregated to dimension grain instead of user grain.
+# Reduces ~732M rows/year → ~500K–2M rows/year.
+# Superset metrics must use SUM(unique_key_count) instead of
+# COUNT(DISTINCT unique_key), and SUM(user_count) instead of
+# COUNT(DISTINCT user_cd).
+# ────────────────────────────────────────────────────────────
 def _fact_enrolled_students_agg_sql(tgt_layer: str) -> str:
     return f"""
         SELECT
             fce.day_key,
-            fce.course_enrollment_cd,
             dorg.org_cd,
             dorg.short_name                                             AS org_short_name,
             dce.display_number                                          AS course_cd,
             dce.display_name                                            AS course_name,
             dce.edition,
-            du.user_cd,
-            du.year_of_birth,
             CASE
                 WHEN du.gender = 'm' THEN 'Male'
                 WHEN du.gender = 'f' THEN 'Female'
@@ -46,10 +50,6 @@ def _fact_enrolled_students_agg_sql(tgt_layer: str) -> str:
             END                                                         AS gender,
             du.level_of_education,
             du.country,
-            CASE
-                WHEN du.year_of_birth IS NULL THEN NULL
-                ELSE year(CURRENT_DATE) - du.year_of_birth
-            END                                                         AS age,
             CASE
                 WHEN du.year_of_birth IS NULL                                    THEN 'N/A'
                 WHEN year(CURRENT_DATE) - du.year_of_birth < 18                 THEN 'Menor 18'
@@ -67,20 +67,25 @@ def _fact_enrolled_students_agg_sql(tgt_layer: str) -> str:
                 WHEN du.level_of_education = 'a'    THEN 'Associate degree'
                 ELSE 'Other'
             END                                                         AS escolaridade,
-            fce.is_enrolled,
             CASE WHEN du.employment_situation IS NULL THEN 'N/A'
                  ELSE du.employment_situation
             END                                                         AS employment_situation,
-            CONCAT(
-                CAST(fce.course_enrollment_cd AS STRING),
-                CAST(du.user_cd AS STRING)
-            )                                                           AS unique_key,
+            fce.is_enrolled,
             CONCAT(
                 CAST(dt.year AS STRING),
                 lpad(CAST(dt.month AS STRING), 2, '0'),
                 ' - ',
                 dt.month_name
-            )                                                           AS month_name
+            )                                                           AS month_name,
+
+            -- Pre-computed counts replace expensive COUNT(DISTINCT ...) at query time
+            COUNT(DISTINCT fce.course_enrollment_cd)                    AS enrollment_count,
+            COUNT(DISTINCT du.user_cd)                                  AS user_count,
+            COUNT(DISTINCT CONCAT(
+                CAST(fce.course_enrollment_cd AS STRING),
+                CAST(du.user_cd AS STRING)
+            ))                                                          AS unique_key_count
+
         FROM       {tgt_layer}.entidades.fact_course_enrollment_daily  fce
         LEFT JOIN  {tgt_layer}.entidades.dim_user                      du
                ON  fce.user_key = du.user_key
@@ -91,64 +96,94 @@ def _fact_enrolled_students_agg_sql(tgt_layer: str) -> str:
               AND  fce.org_key            = dce.org_key
         JOIN       {tgt_layer}.entidades.dim_time                      dt
                ON  fce.day_key = dt.date
+        GROUP BY
+            fce.day_key,
+            dorg.org_cd,
+            dorg.short_name,
+            dce.display_number,
+            dce.display_name,
+            dce.edition,
+            du.gender,
+            du.level_of_education,
+            du.country,
+            du.year_of_birth,
+            du.employment_situation,
+            fce.is_enrolled,
+            dt.year,
+            dt.month,
+            dt.month_name
     """
 
 
+# ────────────────────────────────────────────────────────────
 # Superset Dataset: Taxa Conclusão Final
+# Pre-aggregated to (day_key, org, course, edition, event_type) grain.
+# Superset metrics must use SUM(user_count) instead of COUNT(DISTINCT user_cd).
+# ────────────────────────────────────────────────────────────
 def _fact_conclusion_rate_agg_sql(tgt_layer: str) -> str:
-    # FIX 1: Replaced hardcoded `gold_prod` with `tgt_layer` in the UNION ALL branch.
-    # The original query always read from production regardless of ENVIRONMENT,
-    # silently breaking non-prod runs and preventing staging validation.
     return f"""
         SELECT
-            CAST(fc.day_key AS DATE) AS day_key,
-            fc.user_key,
-            fc.org_key,
-            'certificate' AS event_type,
-            NULL AS course_enrollment_cd,
-            do.org_cd,
-            do.short_name AS org_short_name,
-            dce.display_number AS course_cd,
-            dce.display_name AS course_name,
-            dce.edition,
-            du.user_cd
-        FROM {tgt_layer}.entidades.fact_certificate_daily fc
-        LEFT JOIN {tgt_layer}.entidades.dim_user du
-            ON fc.user_key = du.user_key
-        LEFT JOIN {tgt_layer}.entidades.dim_organization do
-            ON fc.org_key = do.org_key
-        LEFT JOIN {tgt_layer}.entidades.dim_course_edition dce
-            ON fc.course_edition_key = dce.course_edition_key
-            AND fc.org_key = dce.org_key
+            day_key,
+            org_cd,
+            org_short_name,
+            course_cd,
+            course_name,
+            edition,
+            event_type,
+            COUNT(DISTINCT user_cd) AS user_count
+        FROM (
+            SELECT
+                CAST(fc.day_key AS DATE)    AS day_key,
+                do.org_cd,
+                do.short_name               AS org_short_name,
+                dce.display_number          AS course_cd,
+                dce.display_name            AS course_name,
+                dce.edition,
+                'certificate'               AS event_type,
+                du.user_cd
+            FROM {tgt_layer}.entidades.fact_certificate_daily fc
+            LEFT JOIN {tgt_layer}.entidades.dim_user du
+                ON fc.user_key = du.user_key
+            LEFT JOIN {tgt_layer}.entidades.dim_organization do
+                ON fc.org_key = do.org_key
+            LEFT JOIN {tgt_layer}.entidades.dim_course_edition dce
+                ON fc.course_edition_key = dce.course_edition_key
+               AND fc.org_key = dce.org_key
 
-        UNION ALL
+            UNION ALL
 
-        SELECT
-            CAST(fce.day_key AS DATE) AS day_key,
-            fce.user_key,
-            fce.org_key,
-            'enrollment' AS event_type,
-            fce.course_enrollment_cd,
-            do.org_cd,
-            do.short_name AS org_short_name,
-            dce.display_number AS course_cd,
-            dce.display_name AS course_name,
-            dce.edition,
-            du.user_cd
-        FROM {tgt_layer}.entidades.fact_course_enrollment_daily fce
-        LEFT JOIN {tgt_layer}.entidades.dim_user du
-            ON fce.user_key = du.user_key
-        LEFT JOIN {tgt_layer}.entidades.dim_organization do
-            ON fce.org_key = do.org_key
-        LEFT JOIN {tgt_layer}.entidades.dim_course_edition dce
-            ON fce.course_edition_key = dce.course_edition_key
-            AND fce.org_key = dce.org_key
-        JOIN {tgt_layer}.entidades.dim_time dt
-            ON fce.day_key = dt.date
+            SELECT
+                CAST(fce.day_key AS DATE)   AS day_key,
+                do.org_cd,
+                do.short_name               AS org_short_name,
+                dce.display_number          AS course_cd,
+                dce.display_name            AS course_name,
+                dce.edition,
+                'enrollment'                AS event_type,
+                du.user_cd
+            FROM {tgt_layer}.entidades.fact_course_enrollment_daily fce
+            LEFT JOIN {tgt_layer}.entidades.dim_user du
+                ON fce.user_key = du.user_key
+            LEFT JOIN {tgt_layer}.entidades.dim_organization do
+                ON fce.org_key = do.org_key
+            LEFT JOIN {tgt_layer}.entidades.dim_course_edition dce
+                ON fce.course_edition_key = dce.course_edition_key
+               AND fce.org_key = dce.org_key
+        ) base
+        GROUP BY
+            day_key,
+            org_cd,
+            org_short_name,
+            course_cd,
+            course_name,
+            edition,
+            event_type
     """
 
 
-# Superset Dataset: Tickets vs Courses
+# ────────────────────────────────────────────────────────────
+# Superset Dataset: Tickets vs Cursos
+# ────────────────────────────────────────────────────────────
 def _tickets_vs_courses_agg_sql(tgt_layer: str) -> str:
     return f"""
         SELECT
@@ -187,102 +222,180 @@ def _tickets_vs_courses_agg_sql(tgt_layer: str) -> str:
     """
 
 
+# ────────────────────────────────────────────────────────────
 # Superset Dataset: Student Performance
+# Pre-aggregated to (day_key, org, course, edition, letter_grade) grain.
+# Superset metrics must use SUM(user_count) and SUM(passed_count).
+# ────────────────────────────────────────────────────────────
 def _student_performance_agg_sql(tgt_layer: str) -> str:
     return f"""
         SELECT
             fce.day_key,
-            fce.course_enrollment_cd,
             do.org_cd,
             do.short_name                   AS org_short_name,
             dce.display_number              AS course_cd,
             dce.display_name                AS course_name,
             dce.edition,
-            du.user_cd,
             fsg.letter_grade,
-            fsg.passed_timestamp
+            COUNT(DISTINCT du.user_cd)      AS user_count,
+            COUNT(CASE WHEN fsg.passed_timestamp IS NOT NULL
+                       THEN 1 END)          AS passed_count
         FROM {tgt_layer}.entidades.fact_course_enrollment_daily fce
-        LEFT OUTER JOIN {tgt_layer}.entidades.dim_user du
+        LEFT JOIN {tgt_layer}.entidades.dim_user du
             ON fce.user_key = du.user_key
-        LEFT OUTER JOIN {tgt_layer}.entidades.dim_organization do
+        LEFT JOIN {tgt_layer}.entidades.dim_organization do
             ON fce.org_key = do.org_key
-        LEFT OUTER JOIN {tgt_layer}.entidades.dim_course_edition dce
+        LEFT JOIN {tgt_layer}.entidades.dim_course_edition dce
             ON fce.course_edition_key = dce.course_edition_key
            AND fce.org_key = dce.org_key
-        LEFT OUTER JOIN {tgt_layer}.entidades.fact_student_grades fsg
+        LEFT JOIN {tgt_layer}.entidades.fact_student_grades fsg
             ON fce.user_key = fsg.user_key
            AND fce.course_edition_key = fsg.course_edition_key
+        GROUP BY
+            fce.day_key,
+            do.org_cd,
+            do.short_name,
+            dce.display_number,
+            dce.display_name,
+            dce.edition,
+            fsg.letter_grade
     """
 
 
+# ────────────────────────────────────────────────────────────
 # Superset Dataset: Certificates
+# Pre-aggregated to (day_key, org, course, edition, month) grain.
+# Superset metrics must use SUM(certificate_count).
+# ────────────────────────────────────────────────────────────
 def _certificates_agg_sql(tgt_layer: str) -> str:
+    return f"""
+        SELECT
+            fc.day_key,
+            do.org_cd,
+            do.short_name                               AS org_short_name,
+            dce.display_number                          AS course_cd,
+            dce.display_name                            AS course_name,
+            dce.edition,
+            CONCAT(
+                CAST(dt.year AS STRING),
+                LPAD(CAST(dt.month AS STRING), 2, '0'),
+                ' - ',
+                CAST(dt.month_name AS STRING)
+            )                                           AS month_name,
+            COUNT(DISTINCT fc.certificate_cd)           AS certificate_count
+        FROM {tgt_layer}.entidades.fact_certificate_daily fc
+        LEFT JOIN {tgt_layer}.entidades.dim_organization do
+            ON fc.org_key = do.org_key
+        LEFT JOIN {tgt_layer}.entidades.dim_course_edition dce
+            ON fc.course_edition_key = dce.course_edition_key
+           AND fc.org_key = dce.org_key
+        JOIN {tgt_layer}.entidades.dim_time dt
+            ON fc.day_key = dt.date
+        GROUP BY
+            fc.day_key,
+            do.org_cd,
+            do.short_name,
+            dce.display_number,
+            dce.display_name,
+            dce.edition,
+            dt.year,
+            dt.month,
+            dt.month_name
+    """
+
+
+# ────────────────────────────────────────────────────────────
+# Superset Dataset: Inscrições vs Certificados
+# Pre-aggregated to (day_key, org, course, edition, status, month) grain.
+# Preserves total_days_to_conclusion as a SUM so that Superset can compute
+# AVG days as SUM(total_days_to_conclusion) / SUM(certificate_count).
+# ────────────────────────────────────────────────────────────
+def _enrollments_vs_certificates_agg_sql(tgt_layer: str) -> str:
+    return f"""
+        SELECT
+            fce.day_key,
+            do.org_cd,
+            do.short_name                                               AS org_short_name,
+            dce.display_number                                          AS course_cd,
+            dce.display_name                                            AS course_name,
+            dce.edition,
+            CONCAT(
+                CAST(dt.year AS STRING),
+                ' - ',
+                CAST(dt.month_name AS STRING)
+            )                                                           AS month_name,
+            CASE
+                WHEN fc.certificate_cd IS NOT NULL THEN 'concluded'
+                ELSE 'enrolled'
+            END                                                         AS status,
+            COUNT(DISTINCT fce.course_enrollment_cd)                    AS enrollment_count,
+            COUNT(DISTINCT fc.certificate_cd)                           AS certificate_count,
+            SUM(CASE
+                WHEN fc.certificate_cd IS NOT NULL
+                THEN date_diff(DAY, fce.course_enrollment_start_date, fc.certificate_issue_date)
+                ELSE 0
+            END)                                                        AS total_days_to_conclusion
+        FROM {tgt_layer}.entidades.fact_course_enrollment_daily fce
+        LEFT JOIN {tgt_layer}.entidades.dim_organization do
+            ON fce.org_key = do.org_key
+        LEFT JOIN {tgt_layer}.entidades.dim_course_edition dce
+            ON fce.course_edition_key = dce.course_edition_key
+           AND fce.org_key = dce.org_key
+        JOIN {tgt_layer}.entidades.dim_time dt
+            ON fce.day_key = dt.date
+        LEFT JOIN {tgt_layer}.entidades.fact_certificate_daily fc
+            ON fce.day_key = fc.day_key
+           AND fce.course_edition_key = fc.course_edition_key
+           AND fce.user_key = fc.user_key
+           AND fce.org_key = fc.org_key
+        GROUP BY
+            fce.day_key,
+            do.org_cd,
+            do.short_name,
+            dce.display_number,
+            dce.display_name,
+            dce.edition,
+            dt.year,
+            dt.month_name,
+            fc.certificate_cd
+    """
+
+
+# ────────────────────────────────────────────────────────────
+# Superset Dataset: Certificados por Inscritos (para média)
+# Kept at user grain because charts compute per-user ratios
+# that cannot be correctly reconstructed from pre-aggregated counts.
+# ────────────────────────────────────────────────────────────
+def _certificados_por_inscritos_agg_sql(tgt_layer: str) -> str:
     return f"""
         SELECT
             fc.day_key,
             do.org_cd,
             do.short_name                   AS org_short_name,
             dce.display_number              AS course_cd,
-            dce.display_name                AS course_name,
             dce.edition,
+            du.user_cd,
             fc.certificate_cd,
             CONCAT(
-                CAST(dt.year AS STRING),
-                LPAD(CAST(dt.month AS STRING), 2, '0'),
-                ' - ',
-                CAST(dt.month_name AS STRING)
-            )                               AS month_name
+                CAST(fce.course_enrollment_cd AS STRING),
+                CAST(du.user_cd AS STRING)
+            )                               AS unique_key
         FROM {tgt_layer}.entidades.fact_certificate_daily fc
-        LEFT OUTER JOIN {tgt_layer}.entidades.dim_organization do
+        LEFT JOIN {tgt_layer}.entidades.dim_user du
+            ON fc.user_key = du.user_key
+        LEFT JOIN {tgt_layer}.entidades.dim_organization do
             ON fc.org_key = do.org_key
-        LEFT OUTER JOIN {tgt_layer}.entidades.dim_course_edition dce
+        LEFT JOIN {tgt_layer}.entidades.dim_course_edition dce
             ON fc.course_edition_key = dce.course_edition_key
            AND fc.org_key = dce.org_key
-        JOIN {tgt_layer}.entidades.dim_time dt
-            ON fc.day_key = dt.date
+        LEFT JOIN {tgt_layer}.entidades.fact_course_enrollment_daily fce
+            ON fc.user_key = fce.user_key
+           AND fc.course_edition_key = fce.course_edition_key
+           AND fc.org_key = fce.org_key
     """
 
 
-# Superset Dataset: Enrollments vs Certificates
-def _enrollments_vs_certificates_agg_sql(tgt_layer: str) -> str:
-    return f"""
-        SELECT
-            fce.day_key,
-            do.org_cd,
-            do.short_name                   AS org_short_name,
-            dce.display_number              AS course_cd,
-            dce.display_name                AS course_name,
-            dce.edition,
-            CASE
-                WHEN fc.certificate_cd IS NOT NULL
-                THEN date_diff(DAY, fce.course_enrollment_start_date, fc.certificate_issue_date)
-                ELSE -1
-            END                             AS nr_days_to_conclusion,
-            fc.certificate_cd,
-            CONCAT(
-                CAST(dt.year AS STRING),
-                ' - ',
-                CAST(dt.month_name AS STRING)
-            )                               AS month_name
-        FROM {tgt_layer}.entidades.fact_course_enrollment_daily fce
-        LEFT OUTER JOIN {tgt_layer}.entidades.dim_user du
-            ON fce.user_key = du.user_key
-        LEFT OUTER JOIN {tgt_layer}.entidades.dim_organization do
-            ON fce.org_key = do.org_key
-        LEFT OUTER JOIN {tgt_layer}.entidades.dim_course_edition dce
-            ON fce.course_edition_key = dce.course_edition_key
-           AND fce.org_key = dce.org_key
-        JOIN {tgt_layer}.entidades.dim_time dt
-            ON fce.day_key = dt.date
-        LEFT OUTER JOIN {tgt_layer}.entidades.fact_certificate_daily fc
-            ON fce.day_key = fc.day_key
-           AND fce.course_edition_key = fc.course_edition_key
-           AND fce.user_key = fc.user_key
-           AND fce.org_key = fc.org_key
-    """
-
-
-# Registry — add new aggregation tables here
+# Registry
 AGG_TABLES: list[AggTable] = [
     AggTable(
         name         = "fact_enrolled_students_agg",
@@ -320,34 +433,20 @@ AGG_TABLES: list[AggTable] = [
         partition_by = "days(day_key)",
         sort_order   = "day_key ASC, org_cd ASC, course_cd ASC",
     ),
+    AggTable(
+        name         = "certificados_por_inscritos_agg",
+        sql_fn       = _certificados_por_inscritos_agg_sql,
+        partition_by = "days(day_key)",
+        sort_order   = "day_key ASC, org_cd ASC, course_cd ASC",
+    ),
 ]
 
 
 # ============================================================
-# Core rebuild helper
-# FIX 2: Replaced full DROP + CTAS with incremental partition overwrite.
-#
-# The original approach dropped and recreated the entire table on every run,
-# forcing a full scan and rewrite of billions of rows regardless of how much
-# data actually changed. On a 2.35B-row table this dominated the 4-hour runtime.
-#
-# The new approach:
-#   - Creates the table once (if it doesn't exist) via CTAS on first run.
-#   - On subsequent runs, identifies which day_key partitions are present in
-#     the source data since the last execution, and overwrites only those
-#     partitions using Spark's dynamic partition overwrite mode.
-#   - Partition overwrite is atomic in Iceberg: each partition is replaced as
-#     a whole, so there is no risk of partial data.
-#
-# Result: instead of rewriting 2,673 partitions every day, only the partitions
-# that actually changed (typically the last few days) are rewritten.
+# Core rebuild helpers — unchanged from original
 # ============================================================
 
 def _ensure_table_exists(spark, tgt_layer: str, pipeline: str, agg: AggTable) -> bool:
-    """
-    Create the table via CTAS if it doesn't already exist.
-    Returns True if the table was just created (first run), False if it already existed.
-    """
     full_name = f"{tgt_layer}.{pipeline}.{agg.name}"
     tables = [r.tableName for r in spark.sql(f"SHOW TABLES IN {tgt_layer}.{pipeline}").collect()]
     if agg.name in tables:
@@ -378,20 +477,8 @@ def _ensure_table_exists(spark, tgt_layer: str, pipeline: str, agg: AggTable) ->
 def _overwrite_changed_partitions(
     spark, tgt_layer: str, pipeline: str, agg: AggTable, last_execution_timestamp: str
 ) -> None:
-    """
-    Recompute and overwrite only the day_key partitions that have changed
-    since last_execution_timestamp. Uses Iceberg's dynamic partition overwrite,
-    which atomically replaces each affected partition.
-    """
     full_name = f"{tgt_layer}.{pipeline}.{agg.name}"
 
-    # Compute the full result set scoped to changed partitions only.
-    # We first find which day_key values appear in the incremental source
-    # data, then filter the agg SQL to only those days.
-    #
-    # NOTE: Both agg queries are driven by fact_course_enrollment_daily or
-    # fact_certificate_daily which are filtered upstream by ingestion_date.
-    # We translate that to day_key ranges here so Iceberg can prune partitions.
     changed_days_df = spark.sql(f"""
         SELECT DISTINCT day_key
         FROM {tgt_layer}.entidades.fact_course_enrollment_daily
@@ -411,7 +498,6 @@ def _overwrite_changed_partitions(
 
     logging.info(f"Overwriting {changed_day_count} changed day_key partition(s) in {full_name}…")
 
-    # Wrap the agg SQL to filter to only the changed day_key values.
     incremental_sql = f"""
         SELECT agg.*
         FROM (
@@ -420,8 +506,6 @@ def _overwrite_changed_partitions(
         INNER JOIN _changed_days cd ON agg.day_key = cd.day_key
     """
 
-    # Dynamic partition overwrite: Spark replaces only the partitions present
-    # in the DataFrame, leaving all other partitions untouched.
     (
         spark.sql(incremental_sql)
              .writeTo(full_name)
@@ -433,11 +517,6 @@ def _overwrite_changed_partitions(
 
 
 def _run_iceberg_maintenance(spark, tgt_layer: str, full_name: str, sort_order: str) -> None:
-    # FIX 3: Added max-concurrent-file-group-rewrites and partial-progress.
-    # The original call processed thousands of file groups almost serially on
-    # 2 executors. These options allow up to 20 groups to run in parallel and
-    # commit in batches of 10, dramatically reducing wall-clock time.
-    # Tune max-concurrent-file-group-rewrites to ~(num_executors * 2).
     try:
         spark.sql(f"""
             CALL {tgt_layer}.system.rewrite_data_files(
@@ -461,10 +540,6 @@ def _run_iceberg_maintenance(spark, tgt_layer: str, full_name: str, sort_order: 
 
 
 def _get_row_count_from_metadata(spark, tgt_layer: str, full_name: str) -> int:
-    # FIX 4: Replaced spark.table(full_name).count() with a metadata-only lookup.
-    # The original count() triggered a full scan of the entire table (2.35B rows,
-    # ~10 GB) just to produce a single number for the control table. Iceberg
-    # tracks total-records in snapshot metadata at no I/O cost.
     try:
         row_count = int(spark.sql(f"""
             SELECT summary['total-records']
@@ -474,8 +549,6 @@ def _get_row_count_from_metadata(spark, tgt_layer: str, full_name: str) -> int:
             LIMIT 1
         """).first()[0])
     except Exception:
-        # Fall back to the Iceberg table history approach if the snapshots view
-        # is not available in this catalog version.
         try:
             row_count = int(spark.sql(f"""
                 SELECT snapshot_summary['total-records']
@@ -516,26 +589,15 @@ def main():
 
     spark = start_iceberg_session("gold_reporting_agg_tables")
 
-    # FIX 5: Raised shuffle.partitions from 8 → 200 and enabled skew join handling.
-    # The original value of 8 created enormous shuffle partitions when joining and
-    # aggregating billions of rows, making the CTAS write phase very slow.
-    # AQE will coalesce small partitions down automatically; the skew join optimizer
-    # handles the data imbalance introduced by popular course/org combinations.
     spark.conf.set("spark.sql.shuffle.partitions", "200")
     spark.conf.set("spark.sql.adaptive.enabled", "true")
     spark.conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")
     spark.conf.set("spark.sql.adaptive.skewJoin.enabled", "true")
-
-    # Enable dynamic partition overwrite so writeTo().overwritePartitions() only
-    # replaces the partitions present in the DataFrame, not the whole table.
     spark.conf.set("spark.sql.sources.partitionOverwriteMode", "dynamic")
 
     tgt_layer    = f"gold{ENVIRONMENT}"
     tgt_pipeline = "entidades"
 
-    # Optional: comma-separated list of table names to reprocess.
-    # If unset, all tables in AGG_TABLES are processed.
-    # Example: TABLES_TO_RUN=certificates_agg,tickets_vs_courses_agg
     tables_to_run_env = os.environ.get("TABLES_TO_RUN", "").strip()
     if tables_to_run_env:
         requested = {t.strip() for t in tables_to_run_env.split(",")}
@@ -557,8 +619,6 @@ def main():
     for agg in tables:
         logging.info(f"--- Starting rebuild: {agg.name} ---")
 
-        # Each agg table tracks its own last execution timestamp so they can
-        # drift independently without forcing a full recompute of each other.
         last_execution_timestamp = get_max_timestamp_for_table(
             spark_session=spark, table_name=agg.name, env=ENVIRONMENT
         )
