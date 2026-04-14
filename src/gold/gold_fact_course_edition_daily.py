@@ -55,6 +55,7 @@ def main():
             last_update_timestamp          TIMESTAMP     COMMENT 'Timestamp of last update (ETL time)'
         )
         USING iceberg
+        PARTITIONED BY (day_key)
         TBLPROPERTIES (
             'write.parquet.compression-codec' = 'zstd',
             'write.target-file-size-bytes' = '536870912',
@@ -83,6 +84,7 @@ def main():
     dce_inc = (
         spark.table(DIM_TBL)
              .filter(col("last_update_timestamp") > F.to_timestamp(lit(last_execution_timestamp)))
+             .filter(col("key_end_date").isNull())
     )
 
     if dce_inc.count() == 0:
