@@ -157,65 +157,51 @@ def _fact_enrolled_students_agg_sql(tgt_layer: str) -> str:
 # ────────────────────────────────────────────────────────────
 def _fact_conclusion_rate_agg_sql(tgt_layer: str) -> str:
     return f"""
-        WITH events AS (
+        WITH enrollment_agg AS (
             SELECT
-                CAST(fc.day_key AS DATE)        AS day_key,
-                du.user_cd,
-                fc.org_key,
-                'certificate'                   AS event_type,
-                do.org_cd,
-                do.short_name                   AS org_short_name,
-                dce.display_number              AS course_cd,
-                dce.display_name                AS course_name,
-                dce.edition
-            FROM {tgt_layer}.entidades.fact_certificate_daily fc
-            LEFT JOIN {tgt_layer}.entidades.dim_user du
-                ON fc.user_key = du.user_key
-            LEFT JOIN {tgt_layer}.entidades.dim_organization do
-                ON fc.org_key = do.org_key
-            LEFT JOIN {tgt_layer}.entidades.dim_course_edition dce
-                ON fc.course_edition_key = dce.course_edition_key
-               AND fc.org_key = dce.org_key
+                course_edition_key,
+                org_key,
+                COUNT(DISTINCT user_key)                                        AS total_enrolled,
+                COUNT(DISTINCT CASE WHEN NOT is_enrolled THEN user_key END)     AS total_unenrolled,
+                COUNT(DISTINCT CASE WHEN is_enrolled     THEN user_key END)     AS net_enrolled
+            FROM {tgt_layer}.entidades.fact_course_enrollment_daily
+            GROUP BY course_edition_key, org_key
+        ),
 
-            UNION ALL
-
+        certificate_agg AS (
             SELECT
-                CAST(fce.day_key AS DATE)       AS day_key,
-                du.user_cd,
-                fce.org_key,
-                'enrollment'                    AS event_type,
-                do.org_cd,
-                do.short_name                   AS org_short_name,
-                dce.display_number              AS course_cd,
-                dce.display_name                AS course_name,
-                dce.edition
-            FROM {tgt_layer}.entidades.fact_course_enrollment_daily fce
-            LEFT JOIN {tgt_layer}.entidades.dim_user du
-                ON fce.user_key = du.user_key
-            LEFT JOIN {tgt_layer}.entidades.dim_organization do
-                ON fce.org_key = do.org_key
-            LEFT JOIN {tgt_layer}.entidades.dim_course_edition dce
-                ON fce.course_edition_key = dce.course_edition_key
-               AND fce.org_key = dce.org_key
+                course_edition_key,
+                org_key,
+                COUNT(DISTINCT user_key) AS total_certificates
+            FROM {tgt_layer}.entidades.fact_certificate_daily
+            GROUP BY course_edition_key, org_key
         )
+
         SELECT
-            day_key,
-            org_cd,
-            org_short_name,
-            course_cd,
-            course_name,
-            edition,
-            event_type,
-            COUNT(DISTINCT user_cd)             AS user_count
-        FROM events
-        GROUP BY
-            day_key,
-            org_cd,
-            org_short_name,
-            course_cd,
-            course_name,
-            edition,
-            event_type
+            do.org_cd,
+            do.short_name                                                       AS org_short_name,
+            dce.display_number                                                  AS course_cd,
+            dce.display_name                                                    AS course_name,
+            dce.edition,
+            dce.start_date,
+            dce.end_date,
+            dce.end_date < current_timestamp()                                  AS course_ended,
+            ea.total_enrolled,
+            ea.total_unenrolled,
+            ea.net_enrolled,
+            coalesce(ca.total_certificates, 0)                                  AS total_certificates,
+            round(
+                coalesce(ca.total_certificates, 0) * 100.0 / nullif(ea.net_enrolled, 0),
+            2)                                                                  AS conclusion_rate_pct
+        FROM enrollment_agg ea
+        LEFT JOIN certificate_agg ca
+            ON  ea.course_edition_key = ca.course_edition_key
+            AND ea.org_key             = ca.org_key
+        LEFT JOIN {tgt_layer}.entidades.dim_course_edition dce
+            ON  ea.course_edition_key = dce.course_edition_key
+            AND dce.key_end_date IS NULL
+        LEFT JOIN {tgt_layer}.entidades.dim_organization do
+            ON ea.org_key = do.org_key
     """
 
 
