@@ -28,6 +28,9 @@ class AggTable:
     # Lower values = fewer, larger files = faster S3 writes.
     # Tune per table based on expected output size.
     output_partitions: int = 50
+    # Set to True for tables without a day_key grain that require a full
+    # replace on every run instead of partition-level incremental overwrite.
+    full_refresh: bool = False
 
 
 # ────────────────────────────────────────────────────────────
@@ -440,9 +443,10 @@ AGG_TABLES: list[AggTable] = [
     AggTable(
         name               = "fact_conclusion_rate_agg",
         sql_fn             = _fact_conclusion_rate_agg_sql,
-        partition_by       = "days(day_key)",
-        sort_order         = "day_key ASC, org_cd ASC, course_cd ASC",
+        partition_by       = "org_cd",
+        sort_order         = "org_cd ASC, course_cd ASC, edition ASC",
         output_partitions  = 10,
+        full_refresh       = True,
     ),
     AggTable(
         name               = "tickets_vs_courses_agg",
@@ -629,6 +633,23 @@ def _get_row_count_from_metadata(spark, tgt_layer: str, full_name: str) -> int:
     return row_count
 
 
+def _full_refresh_table(spark, tgt_layer: str, pipeline: str, agg: AggTable) -> None:
+    """
+    Full replace for tables without a day_key grain (full_refresh=True).
+    Truncates then rewrites all data in a single pass.
+    """
+    full_name = f"{tgt_layer}.{pipeline}.{agg.name}"
+    logging.info(f"Full refresh: truncating and rewriting {full_name}…")
+    spark.sql(f"TRUNCATE TABLE {full_name}")
+    (
+        spark.sql(agg.sql_fn(tgt_layer))
+             .repartition(agg.output_partitions)
+             .writeTo(full_name)
+             .append()
+    )
+    logging.info(f"Full refresh complete for {full_name}.")
+
+
 def _rebuild_agg_table(
     spark, tgt_layer: str, pipeline: str, agg: AggTable, last_execution_timestamp: str
 ) -> int:
@@ -637,7 +658,10 @@ def _rebuild_agg_table(
     first_run = _ensure_table_exists(spark, tgt_layer, pipeline, agg)
 
     if not first_run:
-        _overwrite_changed_partitions(spark, tgt_layer, pipeline, agg, last_execution_timestamp)
+        if agg.full_refresh:
+            _full_refresh_table(spark, tgt_layer, pipeline, agg)
+        else:
+            _overwrite_changed_partitions(spark, tgt_layer, pipeline, agg, last_execution_timestamp)
 
     # FIX 7 (NEW): Skip Iceberg maintenance on first run.
     # On a freshly written table the files are already optimally sized from
