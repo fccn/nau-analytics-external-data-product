@@ -1,4 +1,4 @@
-from pyspark.sql import DataFrame #type:ignore
+    from pyspark.sql import DataFrame #type:ignore
 import pyspark.sql.functions as F #type:ignore
 from pyspark.sql.functions import (
     col, lit, when, coalesce, greatest, to_timestamp, current_timestamp,
@@ -142,14 +142,22 @@ def main():
     logging.info(f"Daily rows generated: {daily_count}")
 
     # ============================================================
-    # 6. OVERWRITE PARTITIONS
+    # 6. DELETE affected editions, then INSERT new rows.
+    # overwritePartitions() cannot be used: the table is partitioned by
+    # day_key, so it would wipe unrelated editions' rows sharing the same
+    # day partitions. Incremental batches only cover a subset of editions,
+    # so we must scope the delete to the affected course_edition_keys.
     # ============================================================
-    logging.info("Writing using overwritePartitions()...")
+    logging.info("Deleting affected course_edition_keys and appending new rows...")
 
-    (
-        daily.writeTo(DAILY_TBL)
-             .overwritePartitions()
-    )
+    daily.select("course_edition_key").distinct().createOrReplaceTempView("_keys_to_replace")
+
+    spark.sql(f"""
+        DELETE FROM {DAILY_TBL}
+        WHERE course_edition_key IN (SELECT course_edition_key FROM _keys_to_replace)
+    """)
+
+    daily.writeTo(DAILY_TBL).append()
 
     logging.info("Daily fact written successfully.")
 
