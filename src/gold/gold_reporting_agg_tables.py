@@ -46,7 +46,7 @@ class AggTable:
 # FIX 3: Removed du.year_of_birth from GROUP BY — was creating one row per
 # birth year (80+ values) instead of one per age_range bucket (5 values),
 # inflating 102M rows unnecessarily. age_range is already derived from
-# year_of_birth so the information is preserved.
+# year_of_birth so the information is preserved. 
 # FIX 5: The age_range CASE expression that references du.year_of_birth
 # must appear in the GROUP BY — Spark does not allow non-aggregated columns
 # even via a derived expression.  We use a CTE to compute the scalar
