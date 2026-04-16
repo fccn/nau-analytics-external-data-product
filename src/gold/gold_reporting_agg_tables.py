@@ -21,7 +21,7 @@ logging.basicConfig(
 @dataclass
 class AggTable:
     name: str
-    sql_fn: Callable[[str], str]   # receives tgt_layer, returns a SELECT SQL string
+    sql_fn: Callable[..., str]     # sql_fn(tgt_layer) or sql_fn(tgt_layer, day_filter_sql)
     partition_by: str
     sort_order: str
     # FIX 3: target output partitions per table — controls file count written to S3.
@@ -31,6 +31,13 @@ class AggTable:
     # Set to True for tables without a day_key grain that require a full
     # replace on every run instead of partition-level incremental overwrite.
     full_refresh: bool = False
+    # FIX 8: When True, the sql_fn accepts a second arg (SQL predicate fragment)
+    # that gets injected into the fact-table scan so the incremental filter is
+    # applied BEFORE the expensive joins/aggregation, not after. The outer
+    # INNER JOIN _changed_days in _overwrite_changed_partitions is kept as a
+    # safety belt — even if the pushed filter were buggy, dynamic overwrite
+    # can still only touch partitions in _changed_days.
+    pushdown_day_filter: bool = False
 
 
 # ────────────────────────────────────────────────────────────
@@ -40,16 +47,34 @@ class AggTable:
 # birth year (80+ values) instead of one per age_range bucket (5 values),
 # inflating 102M rows unnecessarily. age_range is already derived from
 # year_of_birth so the information is preserved.
-# FIX 5 (NEW): The age_range CASE expression that references
-# du.year_of_birth must appear in the GROUP BY — Spark does not allow
-# non-aggregated columns even via a derived expression.  We use a CTE to
-# compute the scalar columns first, then GROUP BY the alias.
+# FIX 5: The age_range CASE expression that references du.year_of_birth
+# must appear in the GROUP BY — Spark does not allow non-aggregated columns
+# even via a derived expression.  We use a CTE to compute the scalar
+# columns first, then GROUP BY the alias.
+# FIX 8 (NEW): Two-stage aggregation to eliminate the 3× COUNT(DISTINCT)
+# Expand explosion at final-stage.
+#   Stage 1 (dedup): collapse rows to unique (grain + course_enrollment_cd
+#     + user_cd) tuples via GROUP BY. This dedup also absorbs duplicates
+#     introduced by SCD2 joins on dim_course_edition / dim_user.
+#   Stage 2 (counts): COUNT(*) on the deduped set == original
+#     COUNT(DISTINCT CONCAT(enrollment_cd, user_cd)); the remaining two
+#     COUNT(DISTINCT) now run on the much smaller deduped dataset.
+# FIX 8: Optional day_filter_sql is injected into the fact-table scan so the
+# incremental pipeline filters by day_key BEFORE the joins+aggregation,
+# rather than via an outer INNER JOIN after the fact (which left the full
+# scan intact on previous runs).
 # Superset metrics: SUM(unique_key_count), SUM(user_count), SUM(enrollment_count)
 # ────────────────────────────────────────────────────────────
-def _fact_enrolled_students_agg_sql(tgt_layer: str) -> str:
+def _fact_enrolled_students_agg_sql(tgt_layer: str, day_filter_sql: str = "") -> str:
+    # FIX 9: BROADCAST hint for the small dim tables (dorg, dce, dt).
+    # Avoids shuffling the 100M+ row fact_course_enrollment_daily across
+    # the cluster just to align it with tiny dimension tables. dim_user (du)
+    # is intentionally NOT broadcast — it's row-per-user and can grow large.
+    # Spark falls back to sort-merge join automatically if a hinted table
+    # exceeds spark.sql.autoBroadcastJoinThreshold, so this is safe.
     return f"""
         WITH base AS (
-            SELECT
+            SELECT /*+ BROADCAST(dorg, dce, dt) */
                 fce.day_key,
                 dorg.org_cd,
                 dorg.short_name                                             AS org_short_name,
@@ -103,6 +128,45 @@ def _fact_enrolled_students_agg_sql(tgt_layer: str) -> str:
                   AND  fce.org_key            = dce.org_key
             JOIN       {tgt_layer}.entidades.dim_time                      dt
                    ON  fce.day_key = dt.date
+            WHERE 1=1
+              {day_filter_sql}
+        ),
+        dedup AS (
+            SELECT
+                day_key,
+                org_cd,
+                org_short_name,
+                course_cd,
+                course_name,
+                edition,
+                gender,
+                level_of_education,
+                country,
+                age_range,
+                escolaridade,
+                employment_situation,
+                is_enrolled,
+                month_name,
+                course_enrollment_cd,
+                user_cd
+            FROM base
+            GROUP BY
+                day_key,
+                org_cd,
+                org_short_name,
+                course_cd,
+                course_name,
+                edition,
+                gender,
+                level_of_education,
+                country,
+                age_range,
+                escolaridade,
+                employment_situation,
+                is_enrolled,
+                month_name,
+                course_enrollment_cd,
+                user_cd
         )
         SELECT
             day_key,
@@ -121,11 +185,8 @@ def _fact_enrolled_students_agg_sql(tgt_layer: str) -> str:
             month_name,
             COUNT(DISTINCT course_enrollment_cd)                    AS enrollment_count,
             COUNT(DISTINCT user_cd)                                 AS user_count,
-            COUNT(DISTINCT CONCAT(
-                CAST(course_enrollment_cd AS STRING),
-                CAST(user_cd AS STRING)
-            ))                                                      AS unique_key_count
-        FROM base
+            COUNT(*)                                                AS unique_key_count
+        FROM dedup
         GROUP BY
             day_key,
             org_cd,
@@ -146,41 +207,72 @@ def _fact_enrolled_students_agg_sql(tgt_layer: str) -> str:
 
 # ────────────────────────────────────────────────────────────
 # Superset Dataset: Taxa Conclusão Final
-# FIX 6 (NEW): The original query was a raw UNION ALL with NO aggregation,
+# FIX 6: The original query was a raw UNION ALL with NO aggregation,
 # producing the full row count of fact_certificate_daily +
 # fact_course_enrollment_daily (potentially hundreds of millions of rows).
 # Combined with repartition(10), this concentrated massive data per
 # partition, causing repeated executor OOM kills and cascading shuffle
 # fetch failures — the query never completed in 4+ hours.
+# Pre-aggregation to (course_edition_key, org_key) grain reduces output
+# from hundreds of millions of rows to a few thousand.
 #
-# The Superset metric is SUM(user_count), so the data can be pre-aggregated
-# to (day_key, org, course, edition, event_type) grain.  This reduces
-# output from hundreds of millions of rows to a few thousand, eliminating
-# the OOM entirely.
+# FIX 8 (NEW): Eliminated 4× COUNT(DISTINCT user_key) in enrollment_agg
+# + 1× in certificate_agg. Each COUNT(DISTINCT) forced a separate Expand
+# pass; stacking 4 in one SELECT is exponentially bad on a 100M+ row scan.
+# Rewrite as two-stage:
+#   user_summary: dedupe to 1 row per (course_edition_key, org_key,
+#     user_key) — cheap single GROUP BY, no Expand — carrying per-user
+#     "ever_enrolled" / "ever_unenrolled" boolean flags via MAX(CASE).
+#   enrollment_agg: plain SUM(flag) / COUNT(*) over user_summary. No
+#     DISTINCT, no Expand.
+# Semantics are identical:
+#   - COUNT(DISTINCT user_key)                  == COUNT(*) over user_summary
+#   - COUNT(DISTINCT CASE WHEN is_enrolled...)  == SUM(ever_enrolled)
+#   - NULL is_enrolled → MAX(CASE…) returns 0 (unchanged: original
+#     CASE WHEN is_enrolled also drops NULLs)
 # ────────────────────────────────────────────────────────────
 def _fact_conclusion_rate_agg_sql(tgt_layer: str) -> str:
     return f"""
-        WITH enrollment_agg AS (
+        WITH enrollment_user_summary AS (
             SELECT
                 course_edition_key,
                 org_key,
-                COUNT(DISTINCT user_key)                                        AS total_enrolled,
-                COUNT(DISTINCT CASE WHEN NOT is_enrolled THEN user_key END)     AS total_unenrolled,
-                COUNT(DISTINCT CASE WHEN is_enrolled     THEN user_key END)     AS net_enrolled
+                user_key,
+                MAX(CASE WHEN is_enrolled     THEN 1 ELSE 0 END)  AS ever_enrolled,
+                MAX(CASE WHEN NOT is_enrolled THEN 1 ELSE 0 END)  AS ever_unenrolled
             FROM {tgt_layer}.entidades.fact_course_enrollment_daily
+            GROUP BY course_edition_key, org_key, user_key
+        ),
+
+        enrollment_agg AS (
+            SELECT
+                course_edition_key,
+                org_key,
+                COUNT(*)              AS total_enrolled,
+                SUM(ever_unenrolled)  AS total_unenrolled,
+                SUM(ever_enrolled)    AS net_enrolled
+            FROM enrollment_user_summary
             GROUP BY course_edition_key, org_key
+        ),
+
+        certificate_user_summary AS (
+            SELECT DISTINCT
+                course_edition_key,
+                org_key,
+                user_key
+            FROM {tgt_layer}.entidades.fact_certificate_daily
         ),
 
         certificate_agg AS (
             SELECT
                 course_edition_key,
                 org_key,
-                COUNT(DISTINCT user_key) AS total_certificates
-            FROM {tgt_layer}.entidades.fact_certificate_daily
+                COUNT(*) AS total_certificates
+            FROM certificate_user_summary
             GROUP BY course_edition_key, org_key
         )
 
-        SELECT
+        SELECT /*+ BROADCAST(dce, do) */
             do.org_cd,
             do.short_name                                                       AS org_short_name,
             dce.display_number                                                  AS course_cd,
@@ -434,11 +526,12 @@ def _certificados_por_inscritos_agg_sql(tgt_layer: str) -> str:
 # ────────────────────────────────────────────────────────────
 AGG_TABLES: list[AggTable] = [
     AggTable(
-        name               = "fact_enrolled_students_agg",
-        sql_fn             = _fact_enrolled_students_agg_sql,
-        partition_by       = "days(day_key)",
-        sort_order         = "day_key ASC, org_cd ASC, course_cd ASC",
-        output_partitions  = 30,
+        name                 = "fact_enrolled_students_agg",
+        sql_fn               = _fact_enrolled_students_agg_sql,
+        partition_by         = "days(day_key)",
+        sort_order           = "day_key ASC, org_cd ASC, course_cd ASC",
+        output_partitions    = 30,
+        pushdown_day_filter  = True,
     ),
     AggTable(
         name               = "fact_conclusion_rate_agg",
@@ -565,13 +658,25 @@ def _overwrite_changed_partitions(
 
     logging.info(
         f"Overwriting {changed_day_count} changed day_key partition(s) in {full_name} "
-        f"(output_partitions={agg.output_partitions})…"
+        f"(output_partitions={agg.output_partitions}, "
+        f"pushdown_day_filter={agg.pushdown_day_filter})…"
     )
+
+    # FIX 8: When the sql_fn supports it, push the day_key filter into the
+    # fact-table scan BEFORE joins + aggregation.  The outer INNER JOIN is
+    # kept regardless as a correctness safety belt — dynamic overwrite can
+    # only touch partitions present in _changed_days, even if the inline
+    # filter were ever buggy.
+    if agg.pushdown_day_filter:
+        day_filter_sql = "AND fce.day_key IN (SELECT day_key FROM _changed_days)"
+        base_sql = agg.sql_fn(tgt_layer, day_filter_sql)
+    else:
+        base_sql = agg.sql_fn(tgt_layer)
 
     incremental_sql = f"""
         SELECT agg.*
         FROM (
-            {agg.sql_fn(tgt_layer)}
+            {base_sql}
         ) agg
         INNER JOIN _changed_days cd ON agg.day_key = cd.day_key
     """
@@ -706,6 +811,31 @@ def main():
     tgt_layer    = f"gold{ENVIRONMENT}"
     tgt_pipeline = "entidades"
 
+    # FIX 9: Cache the two hottest fact tables so the 7 aggregation queries
+    # can reuse a single Iceberg scan instead of re-reading Parquet from S3.
+    # fact_course_enrollment_daily is scanned by 5 of 7 queries;
+    # fact_certificate_daily is scanned by 4 of 7.
+    # CACHE LAZY TABLE = MEMORY_AND_DISK storage level by default — Spark
+    # spills to disk under memory pressure rather than OOMing executors.
+    #
+    # Trade-off note: once cached, Spark serves reads from the in-memory
+    # relation instead of going back to Iceberg. This means Iceberg
+    # partition-metadata pruning (e.g. the days(day_key) partition scheme)
+    # is bypassed; a pushdown filter now filters rows in-memory rather than
+    # pruning Parquet files before read. For a pipeline dominated by
+    # full-table scans (first run, full_refresh, queries 2–7 which do not
+    # use pushdown_day_filter) this is a clear win. If your day-to-day
+    # runs become dominated by very narrow incremental windows on
+    # fact_enrolled_students_agg (e.g. 1–2 changed days), disable this:
+    #   CACHE_FACT_TABLES=false
+    cache_fact_tables = os.environ.get("CACHE_FACT_TABLES", "true").lower() == "true"
+    if cache_fact_tables:
+        logging.info("Caching fact tables (CACHE_FACT_TABLES=true)…")
+        spark.sql(f"CACHE LAZY TABLE {tgt_layer}.entidades.fact_course_enrollment_daily")
+        spark.sql(f"CACHE LAZY TABLE {tgt_layer}.entidades.fact_certificate_daily")
+    else:
+        logging.info("Fact-table caching disabled (CACHE_FACT_TABLES=false).")
+
     tables_to_run_env = os.environ.get("TABLES_TO_RUN", "").strip()
     if tables_to_run_env:
         requested = {t.strip() for t in tables_to_run_env.split(",")}
@@ -767,6 +897,13 @@ def main():
                 number_of_records = results[agg.name],
                 env               = ENVIRONMENT,
             )
+
+    if cache_fact_tables:
+        try:
+            spark.sql(f"UNCACHE TABLE IF EXISTS {tgt_layer}.entidades.fact_course_enrollment_daily")
+            spark.sql(f"UNCACHE TABLE IF EXISTS {tgt_layer}.entidades.fact_certificate_daily")
+        except Exception as e:
+            logging.warning(f"UNCACHE TABLE failed (cache will be released at session end): {e}")
 
     if errors:
         failed = list(errors.keys())
