@@ -1,4 +1,4 @@
-    from pyspark.sql import DataFrame #type:ignore
+from pyspark.sql import DataFrame #type:ignore
 import pyspark.sql.functions as F #type:ignore
 from pyspark.sql.functions import (
     col, lit, when, coalesce, greatest, to_timestamp, current_timestamp,
