@@ -514,6 +514,138 @@ def _certificados_por_inscritos_agg_sql(tgt_layer: str) -> str:
 
 
 # ────────────────────────────────────────────────────────────
+# Superset Dataset: Enrollment Flow & Active Students
+# Grain: (day_key, org_cd, course_cd, edition, month_name)
+#
+# Serves 4 KPIs that the existing agg tables cannot answer:
+#   1. new_enrollments  — flow: count of new enrollment events on day_key
+#      (day_key = DATE(course_enrollment_start_date))
+#   2. new_unenrollments — flow: count of explicit unenroll events on day_key
+#      (day_key = DATE(unenrollment_date), only when history_type='delete')
+#   3. active_students  — stock: distinct users enrolled on day_key, per
+#      (org, course, edition). NOTE: do NOT sum across courses for the same
+#      org to derive org-level unique students — a user in N courses counts N
+#      times. For org-level unique students, filter to a single course or use
+#      the raw fact_course_enrollment_daily.
+#   4. Cumulative KPIs can be derived in Superset:
+#      - SUM(new_enrollments)   over any date range → enrollments in period
+#      - SUM(new_unenrollments) over any date range → unenrollments in period
+#      - MAX(active_students) or filter day_key=X  → stock on a given day
+#
+# Two-stage aggregation (base → dedup → final) eliminates duplicate rows
+# introduced by SCD2 joins on dim_course_edition / dim_organization before
+# the final COUNT(DISTINCT user_key).
+#
+# Superset metrics: SUM(new_enrollments), SUM(new_unenrollments),
+#                   SUM(active_students) [per course], MAX(active_students) [stock]
+# ────────────────────────────────────────────────────────────
+def _enrollment_flow_agg_sql(tgt_layer: str, day_filter_sql: str = "") -> str:
+    return f"""
+        WITH base AS (
+            SELECT /*+ BROADCAST(dorg, dce, dt) */
+                fce.day_key,
+                dorg.org_cd,
+                dorg.short_name                                             AS org_short_name,
+                dce.display_number                                          AS course_cd,
+                dce.display_name                                            AS course_name,
+                dce.edition,
+                CONCAT(
+                    CAST(dt.year  AS STRING),
+                    LPAD(CAST(dt.month AS STRING), 2, '0'),
+                    ' - ',
+                    dt.month_name
+                )                                                           AS month_name,
+                fce.user_key,
+                fce.course_enrollment_cd,
+                fce.is_enrolled,
+                CASE
+                    WHEN fce.day_key = CAST(fce.course_enrollment_start_date AS DATE)
+                    THEN 1 ELSE 0
+                END                                                         AS is_new_enrollment,
+                CASE
+                    WHEN fce.unenrollment_date IS NOT NULL
+                     AND fce.day_key = CAST(fce.unenrollment_date AS DATE)
+                    THEN 1 ELSE 0
+                END                                                         AS is_new_unenrollment
+            FROM       {tgt_layer}.entidades.fact_course_enrollment_daily   fce
+            LEFT JOIN  {tgt_layer}.entidades.dim_organization               dorg
+                   ON  fce.org_key = dorg.org_key
+            LEFT JOIN  {tgt_layer}.entidades.dim_course_edition             dce
+                   ON  fce.course_edition_key = dce.course_edition_key
+                  AND  fce.org_key            = dce.org_key
+            JOIN       {tgt_layer}.entidades.dim_time                       dt
+                   ON  fce.day_key = dt.date
+            WHERE 1=1
+              {day_filter_sql}
+        ),
+        dedup AS (
+            SELECT
+                day_key, org_cd, org_short_name, course_cd, course_name,
+                edition, month_name, user_key, course_enrollment_cd,
+                is_enrolled, is_new_enrollment, is_new_unenrollment
+            FROM base
+            GROUP BY
+                day_key, org_cd, org_short_name, course_cd, course_name,
+                edition, month_name, user_key, course_enrollment_cd,
+                is_enrolled, is_new_enrollment, is_new_unenrollment
+        )
+        SELECT
+            day_key,
+            org_cd,
+            org_short_name,
+            course_cd,
+            course_name,
+            edition,
+            month_name,
+            SUM(is_new_enrollment)                                          AS new_enrollments,
+            SUM(is_new_unenrollment)                                        AS new_unenrollments,
+            COUNT(DISTINCT CASE WHEN is_enrolled THEN user_key END)         AS active_students
+        FROM dedup
+        GROUP BY
+            day_key, org_cd, org_short_name, course_cd, course_name, edition, month_name
+    """
+
+
+# ────────────────────────────────────────────────────────────
+# Superset Dataset: Unique Students per Org (stock)
+# Grain: (day_key, org_cd)
+#
+# Solves the cross-course double-count problem that affects enrollment_flow_agg
+# when grouping by org: a user enrolled in N courses of the same org would
+# count N times in a course-grain table. Here, COUNT(DISTINCT user_key) is
+# computed at the org level, so each user counts exactly once per org per day.
+#
+# Superset metrics:
+#   - MAX(unique_students) filtered to a single day_key → stock on that date (KPI 3)
+#   - Time series of MAX(unique_students)               → evolution of actives (KPI 4)
+# ────────────────────────────────────────────────────────────
+def _student_stock_agg_sql(tgt_layer: str, day_filter_sql: str = "") -> str:
+    return f"""
+        SELECT /*+ BROADCAST(dorg, dt) */
+            fce.day_key,
+            dorg.org_cd,
+            dorg.short_name                                         AS org_short_name,
+            CONCAT(
+                CAST(dt.year  AS STRING),
+                LPAD(CAST(dt.month AS STRING), 2, '0'),
+                ' - ',
+                dt.month_name
+            )                                                       AS month_name,
+            COUNT(DISTINCT fce.user_key)                            AS unique_students
+        FROM       {tgt_layer}.entidades.fact_course_enrollment_daily  fce
+        LEFT JOIN  {tgt_layer}.entidades.dim_organization              dorg
+               ON  fce.org_key = dorg.org_key
+        JOIN       {tgt_layer}.entidades.dim_time                      dt
+               ON  fce.day_key = dt.date
+        WHERE fce.is_enrolled = true
+          {day_filter_sql}
+        GROUP BY
+            fce.day_key, dorg.org_cd, dorg.short_name,
+            dt.year, dt.month, dt.month_name
+    """
+
+
+# ────────────────────────────────────────────────────────────
 # Registry
 # output_partitions tuned per table based on expected output size:
 #   - fact_enrolled_students_agg: large after agg → 30 partitions
@@ -523,6 +655,8 @@ def _certificados_por_inscritos_agg_sql(tgt_layer: str) -> str:
 #   - certificates_agg:           small → 10 partitions
 #   - enrollments_vs_certificates_agg: medium → 20 partitions
 #   - certificados_por_inscritos_agg:  user grain, larger → 20 partitions
+#   - enrollment_flow_agg:        medium, daily flow + stock → 20 partitions
+#   - student_stock_agg:          small, 1 row per org per day → 5 partitions
 # ────────────────────────────────────────────────────────────
 AGG_TABLES: list[AggTable] = [
     AggTable(
@@ -575,6 +709,22 @@ AGG_TABLES: list[AggTable] = [
         partition_by       = "days(day_key)",
         sort_order         = "day_key ASC, org_cd ASC, course_cd ASC",
         output_partitions  = 20,
+    ),
+    AggTable(
+        name                 = "enrollment_flow_agg",
+        sql_fn               = _enrollment_flow_agg_sql,
+        partition_by         = "days(day_key)",
+        sort_order           = "day_key ASC, org_cd ASC, course_cd ASC",
+        output_partitions    = 20,
+        pushdown_day_filter  = True,
+    ),
+    AggTable(
+        name                 = "student_stock_agg",
+        sql_fn               = _student_stock_agg_sql,
+        partition_by         = "days(day_key)",
+        sort_order           = "day_key ASC, org_cd ASC",
+        output_partitions    = 5,
+        pushdown_day_filter  = True,
     ),
 ]
 
