@@ -264,8 +264,23 @@ def main():
 
     # ------------------------------
     # 9) MERGE daily by (course_enrollment_cd, day_key)
+    # Dedup before MERGE to prevent MERGE_CARDINALITY_VIOLATION.
+    # Duplicates can arise when SCD2 windows in dim_course_edition or dim_user
+    # overlap, causing a single enrollment to join multiple dimension versions.
+    # We keep the row with the most recent last_update_timestamp; ties are
+    # broken arbitrarily (all duplicates carry the same business data).
     # ------------------------------
-    fact_daily.createOrReplaceTempView("fact_daily_tmp")
+    w_dedup = Window.partitionBy("course_enrollment_cd", "day_key") \
+                    .orderBy(F.col("last_update_timestamp").desc())
+
+    fact_daily_deduped = (
+        fact_daily
+        .withColumn("_rn", F.row_number().over(w_dedup))
+        .filter(F.col("_rn") == 1)
+        .drop("_rn")
+    )
+
+    fact_daily_deduped.createOrReplaceTempView("fact_daily_tmp")
 
     spark.sql(f"""
         MERGE INTO {TGT_FACT_DAILY} AS t
