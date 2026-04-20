@@ -152,7 +152,7 @@ def main():
         )
         .withColumn("unenrollment_date",
             F.when(
-                (F.col("is_active") == False) & (F.col("last_event_type") == "delete"),
+                F.col("is_active") == False,
                 F.col("last_event_date")
             )
         )
