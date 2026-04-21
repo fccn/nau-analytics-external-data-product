@@ -172,16 +172,18 @@ def main():
                           current_timestamp=current_timestamp, number_of_records=0, env=ENVIRONMENT)
         return
 
-    # Collect only the affected user IDs so gold reads are scoped to changed users
-    changed_user_ids = [r.user_id for r in df_delta_raw.select("user_id").distinct().collect()]
-    logging.info(f"Distinct users in delta: {len(changed_user_ids)}")
+    # Keep changed user IDs as a DataFrame for a broadcast join (avoids large IN clause)
+    changed_ids_df = df_delta_raw.select(F.col("user_id").alias("user_cd")).distinct()
 
     # ---------------------------------------------------------
     # 4. Read Gold (Target) — scoped to changed users only
     # ---------------------------------------------------------
     tgt_tbl = f"{tgt_layer}.{tgt_pipeline}.{tgt_table_name}"
     try:
-        df_target_full   = spark.table(tgt_tbl).filter(F.col("user_cd").isin(changed_user_ids)).cache()
+        df_target_full = spark.table(tgt_tbl) \
+            .join(F.broadcast(changed_ids_df), on="user_cd", how="inner") \
+            .cache()
+        df_target_full.count()
         df_target_versions = df_target_full \
             .groupBy("user_cd") \
             .agg(F.count("*").alias("max_version"))
@@ -255,6 +257,10 @@ def main():
              F.col("next_version").cast("long")).cast("long")
         )
 
+    df_changed = df_changed.cache()
+    changed_count = df_changed.count()
+    logging.info(f"Changed records (new + SCD1 + SCD2): {changed_count}")
+
     # ---------------------------------------------------------
     # 7. Staging for MERGE
     # ---------------------------------------------------------
@@ -272,6 +278,7 @@ def main():
         .withColumn("merge_action", F.lit("UPSERT_NEW_OR_SCD1"))
 
     df_staged_updates = df_close_old.unionByName(df_upsert_new).cache()
+    df_staged_updates.count()
 
     df_staged_updates.createOrReplaceTempView("staged_updates")
 
@@ -365,7 +372,7 @@ def main():
     logging.info("Process completed successfully.")
 
     #Finally, we update the control table with the number of records that were inserted or updated in this run.
-    update_ctrl_table(spark_session=spark,table_name=tgt_table_name,current_timestamp=current_timestamp,number_of_records=0,env=ENVIRONMENT)
+    update_ctrl_table(spark_session=spark,table_name=tgt_table_name,current_timestamp=current_timestamp,number_of_records=changed_count,env=ENVIRONMENT)
 
 if __name__ == "__main__":
     main()
