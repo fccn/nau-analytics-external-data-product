@@ -646,6 +646,64 @@ def _student_stock_agg_sql(tgt_layer: str, day_filter_sql: str = "") -> str:
 
 
 # ────────────────────────────────────────────────────────────
+# Superset Dataset: Formandos únicos por (org, curso, edição) — user grain
+# Grain: (org_cd, course_cd, edition, user_key)
+#
+# One row per unique enrollment of a user in a course edition. Collapses
+# the daily snapshot of fact_course_enrollment_daily (N rows per user per
+# edition, one per day) into a single user-grain row, so distinct-user
+# counts become additive aggregations (COUNT(*) under filters).
+#
+# Solves two KPIs with minimal query cost:
+#   KPI 1 (no time filter) — "Nº formandos por curso/entidade/edição":
+#     SELECT COUNT(*) FROM ... WHERE org_cd = ? AND course_cd = ? AND edition = ?
+#     SELECT COUNT(DISTINCT user_key) FROM ... WHERE org_cd = ?   -- cross-course
+#
+#   KPI 2 (time-range + currently enrolled) — approx via date bounds:
+#     SELECT COUNT(DISTINCT user_key)
+#     FROM ...
+#     WHERE org_cd = ? AND course_cd = ?
+#       AND first_enrollment_date <= '<end>'
+#       AND last_active_date      >= '<start>'
+#       AND is_currently_enrolled = true
+#
+# For exact distinct-user over an arbitrary range, query
+# fact_course_enrollment_daily directly with day_key + is_enrolled filters.
+#
+# Full refresh: user-grain carries no day_key partition, and flags like
+# is_currently_enrolled can flip for existing users on any incremental
+# run, so partition-level overwrite isn't viable.
+# ────────────────────────────────────────────────────────────
+def _enrollment_users_agg_sql(tgt_layer: str) -> str:
+    return f"""
+        SELECT /*+ BROADCAST(dorg, dce) */
+            dorg.org_cd,
+            dorg.short_name                                           AS org_short_name,
+            dce.display_number                                        AS course_cd,
+            dce.display_name                                          AS course_name,
+            dce.edition,
+            fce.user_key,
+            du.user_cd,
+            MIN(fce.day_key)                                          AS first_enrollment_date,
+            MAX(CASE WHEN fce.is_enrolled     THEN fce.day_key END)   AS last_active_date,
+            MAX(CASE WHEN NOT fce.is_enrolled THEN fce.day_key END)   AS last_unenrollment_date,
+            MAX_BY(fce.is_enrolled, fce.day_key)                      AS is_currently_enrolled
+        FROM       {tgt_layer}.entidades.fact_course_enrollment_daily  fce
+        LEFT JOIN  {tgt_layer}.entidades.dim_organization              dorg
+               ON  fce.org_key = dorg.org_key
+        LEFT JOIN  {tgt_layer}.entidades.dim_course_edition            dce
+               ON  fce.course_edition_key = dce.course_edition_key
+              AND  fce.org_key            = dce.org_key
+        LEFT JOIN  {tgt_layer}.entidades.dim_user                      du
+               ON  fce.user_key = du.user_key
+        GROUP BY
+            dorg.org_cd, dorg.short_name,
+            dce.display_number, dce.display_name, dce.edition,
+            fce.user_key, du.user_cd
+    """
+
+
+# ────────────────────────────────────────────────────────────
 # Registry
 # output_partitions tuned per table based on expected output size:
 #   - fact_enrolled_students_agg: large after agg → 30 partitions
@@ -657,6 +715,7 @@ def _student_stock_agg_sql(tgt_layer: str, day_filter_sql: str = "") -> str:
 #   - certificados_por_inscritos_agg:  user grain, larger → 20 partitions
 #   - enrollment_flow_agg:        medium, daily flow + stock → 20 partitions
 #   - student_stock_agg:          small, 1 row per org per day → 5 partitions
+#   - enrollment_users_agg:       user grain per edition, medium → 20 partitions
 # ────────────────────────────────────────────────────────────
 AGG_TABLES: list[AggTable] = [
     AggTable(
@@ -725,6 +784,14 @@ AGG_TABLES: list[AggTable] = [
         sort_order           = "day_key ASC, org_cd ASC",
         output_partitions    = 5,
         pushdown_day_filter  = True,
+    ),
+    AggTable(
+        name               = "enrollment_users_agg",
+        sql_fn             = _enrollment_users_agg_sql,
+        partition_by       = "org_cd",
+        sort_order         = "org_cd ASC, course_cd ASC, edition ASC, user_key ASC",
+        output_partitions  = 20,
+        full_refresh       = True,
     ),
 ]
 
