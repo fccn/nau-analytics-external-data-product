@@ -676,30 +676,38 @@ def _student_stock_agg_sql(tgt_layer: str, day_filter_sql: str = "") -> str:
 # ────────────────────────────────────────────────────────────
 def _enrollment_users_agg_sql(tgt_layer: str) -> str:
     return f"""
+        WITH user_edition_agg AS (
+            SELECT
+                course_edition_key,
+                org_key,
+                user_key,
+                MIN(day_key)                                          AS first_enrollment_date,
+                MAX(CASE WHEN is_enrolled     THEN day_key END)       AS last_active_date,
+                MAX(CASE WHEN NOT is_enrolled THEN day_key END)       AS last_unenrollment_date,
+                MAX_BY(is_enrolled, day_key)                          AS is_currently_enrolled
+            FROM {tgt_layer}.entidades.fact_course_enrollment_daily
+            GROUP BY course_edition_key, org_key, user_key
+        )
         SELECT /*+ BROADCAST(dorg, dce) */
             dorg.org_cd,
-            dorg.short_name                                           AS org_short_name,
-            dce.display_number                                        AS course_cd,
-            dce.display_name                                          AS course_name,
+            dorg.short_name                     AS org_short_name,
+            dce.display_number                  AS course_cd,
+            dce.display_name                    AS course_name,
             dce.edition,
-            fce.user_key,
+            uea.user_key,
             du.user_cd,
-            MIN(fce.day_key)                                          AS first_enrollment_date,
-            MAX(CASE WHEN fce.is_enrolled     THEN fce.day_key END)   AS last_active_date,
-            MAX(CASE WHEN NOT fce.is_enrolled THEN fce.day_key END)   AS last_unenrollment_date,
-            MAX_BY(fce.is_enrolled, fce.day_key)                      AS is_currently_enrolled
-        FROM       {tgt_layer}.entidades.fact_course_enrollment_daily  fce
-        LEFT JOIN  {tgt_layer}.entidades.dim_organization              dorg
-               ON  fce.org_key = dorg.org_key
-        LEFT JOIN  {tgt_layer}.entidades.dim_course_edition            dce
-               ON  fce.course_edition_key = dce.course_edition_key
-              AND  fce.org_key            = dce.org_key
-        LEFT JOIN  {tgt_layer}.entidades.dim_user                      du
-               ON  fce.user_key = du.user_key
-        GROUP BY
-            dorg.org_cd, dorg.short_name,
-            dce.display_number, dce.display_name, dce.edition,
-            fce.user_key, du.user_cd
+            uea.first_enrollment_date,
+            uea.last_active_date,
+            uea.last_unenrollment_date,
+            uea.is_currently_enrolled
+        FROM       user_edition_agg                                   uea
+        LEFT JOIN  {tgt_layer}.entidades.dim_organization             dorg
+               ON  uea.org_key = dorg.org_key
+        LEFT JOIN  {tgt_layer}.entidades.dim_course_edition           dce
+               ON  uea.course_edition_key = dce.course_edition_key
+              AND  uea.org_key            = dce.org_key
+        LEFT JOIN  {tgt_layer}.entidades.dim_user                     du
+               ON  uea.user_key = du.user_key
     """
 
 
