@@ -96,6 +96,7 @@ def _fact_conclusion_rate_agg_sql(tgt_layer: str) -> str:
                 org_key,
                 user_key
             FROM {tgt_layer}.entidades.fact_certificate_daily
+            WHERE status = 'downloadable'
         ),
 
         certificate_agg AS (
@@ -206,6 +207,7 @@ def _certificates_agg_sql(tgt_layer: str) -> str:
            AND fc.org_key = dce.org_key
         JOIN {tgt_layer}.entidades.dim_time dt
             ON fc.day_key = dt.date
+        WHERE fc.status = 'downloadable'
         GROUP BY
             fc.day_key,
             do.org_cd,
@@ -262,6 +264,7 @@ def _enrollments_vs_certificates_agg_sql(tgt_layer: str) -> str:
            AND fce.course_edition_key = fc.course_edition_key
            AND fce.user_key = fc.user_key
            AND fce.org_key = fc.org_key
+           AND fc.status = 'downloadable'
         GROUP BY
             fce.day_key,
             do.org_cd,

@@ -49,6 +49,7 @@ def main():
             org_key                          BIGINT      COMMENT 'FK → dim_organization.org_key',
 
             -- Certificate metadata
+            status                           STRING      COMMENT 'Certificate status (downloadable, notpassing, audit_passing, unverified, etc.)',
             course_enrollment_start_date     TIMESTAMP   COMMENT 'Enrollment open date for the edition (or start_date)',
             certificate_issue_date           TIMESTAMP   COMMENT 'Date/time the certificate was issued',
 
@@ -154,6 +155,7 @@ def main():
         with_user
         .select(
             col("y.id").cast("string").alias("certificate_cd"),
+            col("y.status").alias("status"),
             col("y.course_edition_key").alias("course_edition_key"),
             col("y.user_key").alias("user_key"),
             col("y.org_key").alias("org_key"),
@@ -172,7 +174,7 @@ def main():
         fact_point
         .withColumn("day_key", F.to_date("certificate_issue_date"))
         .select(
-            "day_key", "certificate_cd", "course_edition_key",
+            "day_key", "certificate_cd", "status", "course_edition_key",
             "user_key", "org_key", "course_enrollment_start_date",
             "certificate_issue_date", "last_update_timestamp"
         )
@@ -201,6 +203,7 @@ def main():
           AND t.day_key        = s.day_key
 
         WHEN MATCHED THEN UPDATE SET
+            t.status                         = s.status,
             t.course_edition_key             = s.course_edition_key,
             t.user_key                       = s.user_key,
             t.org_key                        = s.org_key,
@@ -209,10 +212,10 @@ def main():
             t.last_update_timestamp          = s.last_update_timestamp
 
         WHEN NOT MATCHED THEN INSERT (
-            day_key, certificate_cd, course_edition_key, user_key, org_key,
+            day_key, certificate_cd, status, course_edition_key, user_key, org_key,
             course_enrollment_start_date, certificate_issue_date, last_update_timestamp
         ) VALUES (
-            s.day_key, s.certificate_cd, s.course_edition_key, s.user_key, s.org_key,
+            s.day_key, s.certificate_cd, s.status, s.course_edition_key, s.user_key, s.org_key,
             s.course_enrollment_start_date, s.certificate_issue_date, s.last_update_timestamp
         )
     """)
