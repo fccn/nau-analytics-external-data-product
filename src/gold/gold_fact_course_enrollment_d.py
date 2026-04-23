@@ -109,10 +109,6 @@ def main():
 
     # ------------------------------
     # 2) Most recent state from history
-    # Carries the full snapshot fields (user_id, course_id, created, mode) so
-    # that ids present ONLY in history (= enrollments deleted from MySQL active
-    # table and moved to history) can be reconstructed in the FULL OUTER JOIN
-    # below without depending on the active row.
     # ------------------------------
     w = Window.partitionBy("id").orderBy(
         F.col("history_date").desc(), F.col("ingestion_date").desc()
@@ -124,32 +120,24 @@ def main():
           .filter(F.col("rn") == 1)
           .select(
               "id",
-              "user_id",
-              "course_id",
-              "created",
-              "mode",
-              F.col("is_active").alias("last_is_active"),
               F.col("history_date").alias("last_event_date"),
-              F.col("history_type").alias("last_event_type")
+              F.col("history_type").alias("last_event_type"),
+              F.col("is_active").alias("last_is_active")
           )
     )
 
-    # FULL OUTER JOIN so ids that were deleted from the active table (and
-    # therefore exist ONLY in history) are still picked up. COALESCE order
-    # prefers the active row when both exist (it is the source of truth);
-    # falls back to history for fields when the id is history-only.
     merged_df = (
         enroll_df.alias("b")
-                 .join(latest_hist.alias("h"), F.col("b.id") == F.col("h.id"), "fullouter")
+                 .join(latest_hist.alias("h"), F.col("b.id") == F.col("h.id"), "left")
                  .select(
-                     F.coalesce(F.col("b.id"),        F.col("h.id"))       .alias("course_enrollment_cd"),
-                     F.coalesce(F.col("b.user_id"),   F.col("h.user_id"))  .alias("user_id"),
-                     F.coalesce(F.col("b.course_id"), F.col("h.course_id")).alias("course_id"),
-                     F.coalesce(F.col("h.last_is_active"), F.col("b.is_active")).alias("is_active"),
-                     F.coalesce(F.col("b.mode"),      F.col("h.mode"))     .alias("mode"),
-                     F.coalesce(F.col("b.created"),   F.col("h.created"))  .alias("created"),
-                     F.col("h.last_event_type"),
-                     F.col("h.last_event_date")
+                     F.col("b.id").alias("course_enrollment_cd"),
+                     "b.user_id",
+                     "b.course_id",
+                     F.coalesce("h.last_is_active", "b.is_active").alias("is_active"),
+                     "b.mode",
+                     "b.created",
+                     "h.last_event_type",
+                     "h.last_event_date"
                  )
     )
 
@@ -260,12 +248,20 @@ def main():
         .withColumn("ce_end",   F.coalesce(F.to_date("ce_end_date"), today))
         .withColumn("effective_start", F.greatest(F.col("st_aluno"), F.col("ce_start")))
         # FIX 4 (cont): clamp effective_end to today — no future rows, no runaway expansions
-        .withColumn("effective_end", F.least(
-            F.col("en_aluno"),
-            F.col("ce_end"),
-            today                          # ← hard cap at today
+        # FIX 5: Guarantee effective_end >= effective_start by taking max with start.
+        # Some enrollments are created AFTER the course end_date (late enrollments,
+        # course re-openings). Without this guard, effective_start > effective_end
+        # would silently drop them; users with cert but no enrollment row would
+        # then appear in fact_certificate_daily but not in fact_course_enrollment_daily,
+        # inflating completion rates above 100% in downstream aggregations.
+        .withColumn("effective_end", F.greatest(
+            F.least(
+                F.col("en_aluno"),
+                F.col("ce_end"),
+                today                          # ← hard cap at today
+            ),
+            F.col("effective_start")           # ← minimum: 1 row at the enrollment day
         ))
-        .filter(F.col("effective_start") <= F.col("effective_end"))
         .withColumn("date_array", F.expr("sequence(effective_start, effective_end, interval 1 day)"))
         .withColumn("day_key", F.explode("date_array"))
         .withColumn("time_key", F.date_format("day_key", "yyyyMMdd").cast("int"))
