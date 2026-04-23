@@ -109,6 +109,10 @@ def main():
 
     # ------------------------------
     # 2) Most recent state from history
+    # Carries the full snapshot fields (user_id, course_id, created, mode) so
+    # that ids present ONLY in history (= enrollments deleted from MySQL active
+    # table and moved to history) can be reconstructed in the FULL OUTER JOIN
+    # below without depending on the active row.
     # ------------------------------
     w = Window.partitionBy("id").orderBy(
         F.col("history_date").desc(), F.col("ingestion_date").desc()
@@ -120,24 +124,32 @@ def main():
           .filter(F.col("rn") == 1)
           .select(
               "id",
+              "user_id",
+              "course_id",
+              "created",
+              "mode",
+              F.col("is_active").alias("last_is_active"),
               F.col("history_date").alias("last_event_date"),
-              F.col("history_type").alias("last_event_type"),
-              F.col("is_active").alias("last_is_active")
+              F.col("history_type").alias("last_event_type")
           )
     )
 
+    # FULL OUTER JOIN so ids that were deleted from the active table (and
+    # therefore exist ONLY in history) are still picked up. COALESCE order
+    # prefers the active row when both exist (it is the source of truth);
+    # falls back to history for fields when the id is history-only.
     merged_df = (
         enroll_df.alias("b")
-                 .join(latest_hist.alias("h"), F.col("b.id") == F.col("h.id"), "left")
+                 .join(latest_hist.alias("h"), F.col("b.id") == F.col("h.id"), "fullouter")
                  .select(
-                     F.col("b.id").alias("course_enrollment_cd"),
-                     "b.user_id",
-                     "b.course_id",
-                     F.coalesce("h.last_is_active", "b.is_active").alias("is_active"),
-                     "b.mode",
-                     "b.created",
-                     "h.last_event_type",
-                     "h.last_event_date"
+                     F.coalesce(F.col("b.id"),        F.col("h.id"))       .alias("course_enrollment_cd"),
+                     F.coalesce(F.col("b.user_id"),   F.col("h.user_id"))  .alias("user_id"),
+                     F.coalesce(F.col("b.course_id"), F.col("h.course_id")).alias("course_id"),
+                     F.coalesce(F.col("h.last_is_active"), F.col("b.is_active")).alias("is_active"),
+                     F.coalesce(F.col("b.mode"),      F.col("h.mode"))     .alias("mode"),
+                     F.coalesce(F.col("b.created"),   F.col("h.created"))  .alias("created"),
+                     F.col("h.last_event_type"),
+                     F.col("h.last_event_date")
                  )
     )
 

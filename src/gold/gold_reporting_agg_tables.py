@@ -88,6 +88,10 @@ def _fact_conclusion_rate_agg_sql(tgt_layer: str) -> str:
             SELECT org_key, org_cd
             FROM {tgt_layer}.entidades.dim_organization
         ),
+        user_all_versions AS (
+            SELECT user_key, user_cd
+            FROM {tgt_layer}.entidades.dim_user
+        ),
         ce_current AS (
             SELECT display_number AS course_cd,
                    edition,
@@ -109,13 +113,14 @@ def _fact_conclusion_rate_agg_sql(tgt_layer: str) -> str:
                 ce.course_cd,
                 ce.edition,
                 org.org_cd,
-                fce.user_key,
+                u.user_cd,
                 MAX(CASE WHEN fce.is_enrolled     THEN 1 ELSE 0 END)  AS ever_enrolled,
                 MAX(CASE WHEN NOT fce.is_enrolled THEN 1 ELSE 0 END)  AS ever_unenrolled
             FROM       {tgt_layer}.entidades.fact_course_enrollment_daily  fce
-            JOIN       ce_all_versions  ce  ON fce.course_edition_key = ce.course_edition_key
-            JOIN       org_all_versions org ON fce.org_key            = org.org_key
-            GROUP BY ce.course_cd, ce.edition, org.org_cd, fce.user_key
+            JOIN       ce_all_versions   ce  ON fce.course_edition_key = ce.course_edition_key
+            JOIN       org_all_versions  org ON fce.org_key            = org.org_key
+            JOIN       user_all_versions u   ON fce.user_key           = u.user_key
+            GROUP BY ce.course_cd, ce.edition, org.org_cd, u.user_cd
         ),
 
         enrollment_agg AS (
@@ -135,10 +140,11 @@ def _fact_conclusion_rate_agg_sql(tgt_layer: str) -> str:
                 ce.course_cd,
                 ce.edition,
                 org.org_cd,
-                fc.user_key
+                u.user_cd
             FROM       {tgt_layer}.entidades.fact_certificate_daily fc
-            JOIN       ce_all_versions  ce  ON fc.course_edition_key = ce.course_edition_key
-            JOIN       org_all_versions org ON fc.org_key            = org.org_key
+            JOIN       ce_all_versions   ce  ON fc.course_edition_key = ce.course_edition_key
+            JOIN       org_all_versions  org ON fc.org_key            = org.org_key
+            JOIN       user_all_versions u   ON fc.user_key           = u.user_key
             WHERE fc.status = 'downloadable'
         ),
 
