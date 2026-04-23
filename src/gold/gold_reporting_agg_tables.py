@@ -41,171 +41,6 @@ class AggTable:
 
 
 # ────────────────────────────────────────────────────────────
-# Superset Dataset: Formandos Inscritos
-# Pre-aggregated to dimension grain.
-# FIX 3: Removed du.year_of_birth from GROUP BY — was creating one row per
-# birth year (80+ values) instead of one per age_range bucket (5 values),
-# inflating 102M rows unnecessarily. age_range is already derived from
-# year_of_birth so the information is preserved. 
-# FIX 5: The age_range CASE expression that references du.year_of_birth
-# must appear in the GROUP BY — Spark does not allow non-aggregated columns
-# even via a derived expression.  We use a CTE to compute the scalar
-# columns first, then GROUP BY the alias.
-# FIX 8 (NEW): Two-stage aggregation to eliminate the 3× COUNT(DISTINCT)
-# Expand explosion at final-stage.
-#   Stage 1 (dedup): collapse rows to unique (grain + course_enrollment_cd
-#     + user_cd) tuples via GROUP BY. This dedup also absorbs duplicates
-#     introduced by SCD2 joins on dim_course_edition / dim_user.
-#   Stage 2 (counts): COUNT(*) on the deduped set == original
-#     COUNT(DISTINCT CONCAT(enrollment_cd, user_cd)); the remaining two
-#     COUNT(DISTINCT) now run on the much smaller deduped dataset.
-# FIX 8: Optional day_filter_sql is injected into the fact-table scan so the
-# incremental pipeline filters by day_key BEFORE the joins+aggregation,
-# rather than via an outer INNER JOIN after the fact (which left the full
-# scan intact on previous runs).
-# Superset metrics: SUM(unique_key_count), SUM(user_count), SUM(enrollment_count)
-# ────────────────────────────────────────────────────────────
-def _fact_enrolled_students_agg_sql(tgt_layer: str, day_filter_sql: str = "") -> str:
-    # FIX 9: BROADCAST hint for the small dim tables (dorg, dce, dt).
-    # Avoids shuffling the 100M+ row fact_course_enrollment_daily across
-    # the cluster just to align it with tiny dimension tables. dim_user (du)
-    # is intentionally NOT broadcast — it's row-per-user and can grow large.
-    # Spark falls back to sort-merge join automatically if a hinted table
-    # exceeds spark.sql.autoBroadcastJoinThreshold, so this is safe.
-    return f"""
-        WITH base AS (
-            SELECT /*+ BROADCAST(dorg, dce, dt) */
-                fce.day_key,
-                dorg.org_cd,
-                dorg.short_name                                             AS org_short_name,
-                dce.display_number                                          AS course_cd,
-                dce.display_name                                            AS course_name,
-                dce.edition,
-                CASE
-                    WHEN du.gender = 'm' THEN 'Male'
-                    WHEN du.gender = 'f' THEN 'Female'
-                    WHEN du.gender = 'o' THEN 'Other'
-                    ELSE 'N/A'
-                END                                                         AS gender,
-                du.level_of_education,
-                du.country,
-                CASE
-                    WHEN du.year_of_birth IS NULL                                    THEN 'N/A'
-                    WHEN year(CURRENT_DATE) - du.year_of_birth < 18                 THEN 'Menor 18'
-                    WHEN year(CURRENT_DATE) - du.year_of_birth BETWEEN 18 AND 29    THEN '18-29'
-                    WHEN year(CURRENT_DATE) - du.year_of_birth BETWEEN 30 AND 54    THEN '30-54'
-                    ELSE '55+'
-                END                                                         AS age_range,
-                CASE
-                    WHEN du.level_of_education IS NULL  THEN 'N/A'
-                    WHEN du.level_of_education = 'm'    THEN 'Master''s degree'
-                    WHEN du.level_of_education = 'jhs'  THEN 'Junior High School'
-                    WHEN du.level_of_education = 'hs'   THEN 'High School'
-                    WHEN du.level_of_education = 'b'    THEN 'Bachelor''s degree'
-                    WHEN du.level_of_education = 'p'    THEN 'PhD / Doctorate'
-                    WHEN du.level_of_education = 'a'    THEN 'Associate degree'
-                    ELSE 'Other'
-                END                                                         AS escolaridade,
-                CASE WHEN du.employment_situation IS NULL THEN 'N/A'
-                     ELSE du.employment_situation
-                END                                                         AS employment_situation,
-                fce.is_enrolled,
-                CONCAT(
-                    CAST(dt.year AS STRING),
-                    lpad(CAST(dt.month AS STRING), 2, '0'),
-                    ' - ',
-                    dt.month_name
-                )                                                           AS month_name,
-                fce.course_enrollment_cd,
-                du.user_cd
-            FROM       {tgt_layer}.entidades.fact_course_enrollment_daily  fce
-            LEFT JOIN  {tgt_layer}.entidades.dim_user                      du
-                   ON  fce.user_key = du.user_key
-            LEFT JOIN  {tgt_layer}.entidades.dim_organization              dorg
-                   ON  fce.org_key  = dorg.org_key
-            LEFT JOIN  {tgt_layer}.entidades.dim_course_edition            dce
-                   ON  fce.course_edition_key = dce.course_edition_key
-                  AND  fce.org_key            = dce.org_key
-            JOIN       {tgt_layer}.entidades.dim_time                      dt
-                   ON  fce.day_key = dt.date
-            WHERE 1=1
-              {day_filter_sql}
-        ),
-        dedup AS (
-            SELECT
-                day_key,
-                org_cd,
-                org_short_name,
-                course_cd,
-                course_name,
-                edition,
-                gender,
-                level_of_education,
-                country,
-                age_range,
-                escolaridade,
-                employment_situation,
-                is_enrolled,
-                month_name,
-                course_enrollment_cd,
-                user_cd
-            FROM base
-            GROUP BY
-                day_key,
-                org_cd,
-                org_short_name,
-                course_cd,
-                course_name,
-                edition,
-                gender,
-                level_of_education,
-                country,
-                age_range,
-                escolaridade,
-                employment_situation,
-                is_enrolled,
-                month_name,
-                course_enrollment_cd,
-                user_cd
-        )
-        SELECT
-            day_key,
-            org_cd,
-            org_short_name,
-            course_cd,
-            course_name,
-            edition,
-            gender,
-            level_of_education,
-            country,
-            age_range,
-            escolaridade,
-            employment_situation,
-            is_enrolled,
-            month_name,
-            COUNT(DISTINCT course_enrollment_cd)                    AS enrollment_count,
-            COUNT(DISTINCT user_cd)                                 AS user_count,
-            COUNT(*)                                                AS unique_key_count
-        FROM dedup
-        GROUP BY
-            day_key,
-            org_cd,
-            org_short_name,
-            course_cd,
-            course_name,
-            edition,
-            gender,
-            level_of_education,
-            country,
-            age_range,
-            escolaridade,
-            employment_situation,
-            is_enrolled,
-            month_name
-    """
-
-
-# ────────────────────────────────────────────────────────────
 # Superset Dataset: Taxa Conclusão Final
 # FIX 6: The original query was a raw UNION ALL with NO aggregation,
 # producing the full row count of fact_certificate_daily +
@@ -343,46 +178,6 @@ def _tickets_vs_courses_agg_sql(tgt_layer: str) -> str:
 
 
 # ────────────────────────────────────────────────────────────
-# Superset Dataset: Student Performance
-# Pre-aggregated to (day_key, org, course, edition, letter_grade) grain.
-# Superset metrics: SUM(user_count), SUM(passed_count)
-# ────────────────────────────────────────────────────────────
-def _student_performance_agg_sql(tgt_layer: str) -> str:
-    return f"""
-        SELECT
-            fce.day_key,
-            do.org_cd,
-            do.short_name                   AS org_short_name,
-            dce.display_number              AS course_cd,
-            dce.display_name                AS course_name,
-            dce.edition,
-            fsg.letter_grade,
-            COUNT(DISTINCT du.user_cd)      AS user_count,
-            COUNT(CASE WHEN fsg.passed_timestamp IS NOT NULL
-                       THEN 1 END)          AS passed_count
-        FROM {tgt_layer}.entidades.fact_course_enrollment_daily fce
-        LEFT JOIN {tgt_layer}.entidades.dim_user du
-            ON fce.user_key = du.user_key
-        LEFT JOIN {tgt_layer}.entidades.dim_organization do
-            ON fce.org_key = do.org_key
-        LEFT JOIN {tgt_layer}.entidades.dim_course_edition dce
-            ON fce.course_edition_key = dce.course_edition_key
-           AND fce.org_key = dce.org_key
-        LEFT JOIN {tgt_layer}.entidades.fact_student_grades fsg
-            ON fce.user_key = fsg.user_key
-           AND fce.course_edition_key = fsg.course_edition_key
-        GROUP BY
-            fce.day_key,
-            do.org_cd,
-            do.short_name,
-            dce.display_number,
-            dce.display_name,
-            dce.edition,
-            fsg.letter_grade
-    """
-
-
-# ────────────────────────────────────────────────────────────
 # Superset Dataset: Certificates
 # Pre-aggregated to (day_key, org, course, edition, month) grain.
 # Superset metrics: SUM(certificate_count)
@@ -481,39 +276,6 @@ def _enrollments_vs_certificates_agg_sql(tgt_layer: str) -> str:
 
 
 # ────────────────────────────────────────────────────────────
-# Superset Dataset: Certificados por Inscritos (para média)
-# Kept at user grain — per-user ratios cannot be reconstructed from aggregates.
-# ────────────────────────────────────────────────────────────
-def _certificados_por_inscritos_agg_sql(tgt_layer: str) -> str:
-    return f"""
-        SELECT
-            fc.day_key,
-            do.org_cd,
-            do.short_name                   AS org_short_name,
-            dce.display_number              AS course_cd,
-            dce.edition,
-            du.user_cd,
-            fc.certificate_cd,
-            CONCAT(
-                CAST(fce.course_enrollment_cd AS STRING),
-                CAST(du.user_cd AS STRING)
-            )                               AS unique_key
-        FROM {tgt_layer}.entidades.fact_certificate_daily fc
-        LEFT JOIN {tgt_layer}.entidades.dim_user du
-            ON fc.user_key = du.user_key
-        LEFT JOIN {tgt_layer}.entidades.dim_organization do
-            ON fc.org_key = do.org_key
-        LEFT JOIN {tgt_layer}.entidades.dim_course_edition dce
-            ON fc.course_edition_key = dce.course_edition_key
-           AND fc.org_key = dce.org_key
-        LEFT JOIN {tgt_layer}.entidades.fact_course_enrollment_daily fce
-            ON fc.user_key = fce.user_key
-           AND fc.course_edition_key = fce.course_edition_key
-           AND fc.org_key = fce.org_key
-    """
-
-
-# ────────────────────────────────────────────────────────────
 # Superset Dataset: Enrollment Flow & Active Students
 # Grain: (day_key, org_cd, course_cd, edition, month_name)
 #
@@ -607,45 +369,6 @@ def _enrollment_flow_agg_sql(tgt_layer: str, day_filter_sql: str = "") -> str:
 
 
 # ────────────────────────────────────────────────────────────
-# Superset Dataset: Unique Students per Org (stock)
-# Grain: (day_key, org_cd)
-#
-# Solves the cross-course double-count problem that affects enrollment_flow_agg
-# when grouping by org: a user enrolled in N courses of the same org would
-# count N times in a course-grain table. Here, COUNT(DISTINCT user_key) is
-# computed at the org level, so each user counts exactly once per org per day.
-#
-# Superset metrics:
-#   - MAX(unique_students) filtered to a single day_key → stock on that date (KPI 3)
-#   - Time series of MAX(unique_students)               → evolution of actives (KPI 4)
-# ────────────────────────────────────────────────────────────
-def _student_stock_agg_sql(tgt_layer: str, day_filter_sql: str = "") -> str:
-    return f"""
-        SELECT /*+ BROADCAST(dorg, dt) */
-            fce.day_key,
-            dorg.org_cd,
-            dorg.short_name                                         AS org_short_name,
-            CONCAT(
-                CAST(dt.year  AS STRING),
-                LPAD(CAST(dt.month AS STRING), 2, '0'),
-                ' - ',
-                dt.month_name
-            )                                                       AS month_name,
-            COUNT(DISTINCT fce.user_key)                            AS unique_students
-        FROM       {tgt_layer}.entidades.fact_course_enrollment_daily  fce
-        LEFT JOIN  {tgt_layer}.entidades.dim_organization              dorg
-               ON  fce.org_key = dorg.org_key
-        JOIN       {tgt_layer}.entidades.dim_time                      dt
-               ON  fce.day_key = dt.date
-        WHERE fce.is_enrolled = true
-          {day_filter_sql}
-        GROUP BY
-            fce.day_key, dorg.org_cd, dorg.short_name,
-            dt.year, dt.month, dt.month_name
-    """
-
-
-# ────────────────────────────────────────────────────────────
 # Superset Dataset: Formandos únicos por (org, curso, edição) — user grain
 # Grain: (org_cd, course_cd, edition, user_key)
 #
@@ -714,26 +437,14 @@ def _enrollment_users_agg_sql(tgt_layer: str) -> str:
 # ────────────────────────────────────────────────────────────
 # Registry
 # output_partitions tuned per table based on expected output size:
-#   - fact_enrolled_students_agg: large after agg → 30 partitions
 #   - fact_conclusion_rate_agg:   now aggregated, small → 10 partitions
 #   - tickets_vs_courses_agg:     small → 5 partitions
-#   - student_performance_agg:    medium → 20 partitions
 #   - certificates_agg:           small → 10 partitions
 #   - enrollments_vs_certificates_agg: medium → 20 partitions
-#   - certificados_por_inscritos_agg:  user grain, larger → 20 partitions
 #   - enrollment_flow_agg:        medium, daily flow + stock → 20 partitions
-#   - student_stock_agg:          small, 1 row per org per day → 5 partitions
 #   - enrollment_users_agg:       user grain per edition, medium → 20 partitions
 # ────────────────────────────────────────────────────────────
 AGG_TABLES: list[AggTable] = [
-    AggTable(
-        name                 = "fact_enrolled_students_agg",
-        sql_fn               = _fact_enrolled_students_agg_sql,
-        partition_by         = "days(day_key)",
-        sort_order           = "day_key ASC, org_cd ASC, course_cd ASC",
-        output_partitions    = 30,
-        pushdown_day_filter  = True,
-    ),
     AggTable(
         name               = "fact_conclusion_rate_agg",
         sql_fn             = _fact_conclusion_rate_agg_sql,
@@ -750,13 +461,6 @@ AGG_TABLES: list[AggTable] = [
         output_partitions  = 5,
     ),
     AggTable(
-        name               = "student_performance_agg",
-        sql_fn             = _student_performance_agg_sql,
-        partition_by       = "days(day_key)",
-        sort_order         = "day_key ASC, org_cd ASC, course_cd ASC",
-        output_partitions  = 20,
-    ),
-    AggTable(
         name               = "certificates_agg",
         sql_fn             = _certificates_agg_sql,
         partition_by       = "days(day_key)",
@@ -771,26 +475,11 @@ AGG_TABLES: list[AggTable] = [
         output_partitions  = 20,
     ),
     AggTable(
-        name               = "certificados_por_inscritos_agg",
-        sql_fn             = _certificados_por_inscritos_agg_sql,
-        partition_by       = "days(day_key)",
-        sort_order         = "day_key ASC, org_cd ASC, course_cd ASC",
-        output_partitions  = 20,
-    ),
-    AggTable(
         name                 = "enrollment_flow_agg",
         sql_fn               = _enrollment_flow_agg_sql,
         partition_by         = "days(day_key)",
         sort_order           = "day_key ASC, org_cd ASC, course_cd ASC",
         output_partitions    = 20,
-        pushdown_day_filter  = True,
-    ),
-    AggTable(
-        name                 = "student_stock_agg",
-        sql_fn               = _student_stock_agg_sql,
-        partition_by         = "days(day_key)",
-        sort_order           = "day_key ASC, org_cd ASC",
-        output_partitions    = 5,
         pushdown_day_filter  = True,
     ),
     AggTable(
@@ -1036,10 +725,10 @@ def main():
     tgt_layer    = f"gold{ENVIRONMENT}"
     tgt_pipeline = "entidades"
 
-    # FIX 9: Cache the two hottest fact tables so the 7 aggregation queries
+    # FIX 9: Cache the two hottest fact tables so the aggregation queries
     # can reuse a single Iceberg scan instead of re-reading Parquet from S3.
-    # fact_course_enrollment_daily is scanned by 5 of 7 queries;
-    # fact_certificate_daily is scanned by 4 of 7.
+    # fact_course_enrollment_daily is scanned by 4 of 6 queries;
+    # fact_certificate_daily is scanned by 3 of 6.
     # CACHE LAZY TABLE = MEMORY_AND_DISK storage level by default — Spark
     # spills to disk under memory pressure rather than OOMing executors.
     #
@@ -1048,10 +737,10 @@ def main():
     # partition-metadata pruning (e.g. the days(day_key) partition scheme)
     # is bypassed; a pushdown filter now filters rows in-memory rather than
     # pruning Parquet files before read. For a pipeline dominated by
-    # full-table scans (first run, full_refresh, queries 2–7 which do not
-    # use pushdown_day_filter) this is a clear win. If your day-to-day
-    # runs become dominated by very narrow incremental windows on
-    # fact_enrolled_students_agg (e.g. 1–2 changed days), disable this:
+    # full-table scans (first run, full_refresh, queries that do not use
+    # pushdown_day_filter) this is a clear win. If your day-to-day runs
+    # become dominated by very narrow incremental windows on
+    # enrollment_flow_agg (e.g. 1–2 changed days), disable this:
     #   CACHE_FACT_TABLES=false
     cache_fact_tables = os.environ.get("CACHE_FACT_TABLES", "true").lower() == "true"
     if cache_fact_tables:
