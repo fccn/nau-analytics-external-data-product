@@ -180,37 +180,6 @@ def main():
         )
     )
 
-    # Defensive dedup on the MERGE keys. SCD2 joins on dim_course_edition /
-    # dim_user can multiply rows when a dim has overlapping validity windows
-    # for the same natural key (data-quality issue in the dim). MERGE
-    # requires source to be unique on the ON columns; prefer rows where the
-    # FKs resolved (non-null) and pick the row with the highest SCD2 keys
-    # for determinism across reruns.
-    w_merge = (
-        Window
-        .partitionBy("certificate_cd", "day_key")
-        .orderBy(
-            F.when(col("course_edition_key").isNull(), 1).otherwise(0),
-            F.when(col("user_key").isNull(),           1).otherwise(0),
-            col("course_edition_key").desc_nulls_last(),
-            col("user_key").desc_nulls_last(),
-        )
-    )
-    fact_daily_pre = fact_daily.count()
-    fact_daily = (
-        fact_daily
-        .withColumn("_rn", row_number().over(w_merge))
-        .filter(col("_rn") == 1)
-        .drop("_rn")
-    )
-    fact_daily_post = fact_daily.count()
-    if fact_daily_pre != fact_daily_post:
-        logging.warning(
-            f"SCD2 dim join produced {fact_daily_pre - fact_daily_post} duplicate "
-            f"(certificate_cd, day_key) rows — collapsed before MERGE. "
-            f"Investigate dim_course_edition / dim_user for overlapping validity windows."
-        )
-
     dq_nulls = fact_daily.filter(
         col("course_edition_key").isNull() |
         col("user_key").isNull() |
