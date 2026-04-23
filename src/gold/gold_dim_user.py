@@ -292,7 +292,8 @@ def main():
     USING staged_updates AS source
     ON target.user_cd = source.merge_key
 
-    WHEN MATCHED AND source.merge_action = 'CLOSE_SCD2' THEN
+    WHEN MATCHED AND source.merge_action = 'CLOSE_SCD2'
+                 AND target.key_end_date = CAST('9999-12-31' AS TIMESTAMP) THEN
       UPDATE SET
         target.key_end_date          = CAST(source.event_time AS TIMESTAMP),
         target.last_update_timestamp = current_timestamp()
