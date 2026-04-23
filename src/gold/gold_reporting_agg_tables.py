@@ -67,56 +67,100 @@ class AggTable:
 #     CASE WHEN is_enrolled also drops NULLs)
 # ────────────────────────────────────────────────────────────
 def _fact_conclusion_rate_agg_sql(tgt_layer: str) -> str:
+    # FIX: Aggregate by NATURAL keys (display_number + edition + org_cd), not
+    # SCD2 surrogates (course_edition_key + org_key). When dim_course_edition
+    # has multiple SCD2 versions for the same course (e.g. attribute changed
+    # mid-stream), enrollments and certificates land on different surrogate
+    # keys depending on the event_ts. Grouping by surrogate splits a single
+    # logical course into multiple agg rows, each with a partial slice of
+    # users — producing impossible rates >100% for some slices.
+    # ce_all_versions / org_all_versions map every SCD2 version to its
+    # natural key; ce_current / org_current pick the latest version's
+    # display info for the final projection.
     return f"""
-        WITH enrollment_user_summary AS (
+        WITH ce_all_versions AS (
+            SELECT course_edition_key,
+                   display_number AS course_cd,
+                   edition
+            FROM {tgt_layer}.entidades.dim_course_edition
+        ),
+        org_all_versions AS (
+            SELECT org_key, org_cd
+            FROM {tgt_layer}.entidades.dim_organization
+        ),
+        ce_current AS (
+            SELECT display_number AS course_cd,
+                   edition,
+                   MAX_BY(display_name, key_start_date) AS course_name,
+                   MAX_BY(start_date,   key_start_date) AS start_date,
+                   MAX_BY(end_date,     key_start_date) AS end_date
+            FROM {tgt_layer}.entidades.dim_course_edition
+            GROUP BY display_number, edition
+        ),
+        org_current AS (
+            SELECT org_cd,
+                   MAX_BY(short_name, key_start_date) AS org_short_name
+            FROM {tgt_layer}.entidades.dim_organization
+            GROUP BY org_cd
+        ),
+
+        enrollment_user_summary AS (
             SELECT
-                course_edition_key,
-                org_key,
-                user_key,
-                MAX(CASE WHEN is_enrolled     THEN 1 ELSE 0 END)  AS ever_enrolled,
-                MAX(CASE WHEN NOT is_enrolled THEN 1 ELSE 0 END)  AS ever_unenrolled
-            FROM {tgt_layer}.entidades.fact_course_enrollment_daily
-            GROUP BY course_edition_key, org_key, user_key
+                ce.course_cd,
+                ce.edition,
+                org.org_cd,
+                fce.user_key,
+                MAX(CASE WHEN fce.is_enrolled     THEN 1 ELSE 0 END)  AS ever_enrolled,
+                MAX(CASE WHEN NOT fce.is_enrolled THEN 1 ELSE 0 END)  AS ever_unenrolled
+            FROM       {tgt_layer}.entidades.fact_course_enrollment_daily  fce
+            JOIN       ce_all_versions  ce  ON fce.course_edition_key = ce.course_edition_key
+            JOIN       org_all_versions org ON fce.org_key            = org.org_key
+            GROUP BY ce.course_cd, ce.edition, org.org_cd, fce.user_key
         ),
 
         enrollment_agg AS (
             SELECT
-                course_edition_key,
-                org_key,
+                course_cd,
+                edition,
+                org_cd,
                 COUNT(*)              AS total_enrolled,
                 SUM(ever_unenrolled)  AS total_unenrolled,
                 SUM(ever_enrolled)    AS net_enrolled
             FROM enrollment_user_summary
-            GROUP BY course_edition_key, org_key
+            GROUP BY course_cd, edition, org_cd
         ),
 
         certificate_user_summary AS (
             SELECT DISTINCT
-                course_edition_key,
-                org_key,
-                user_key
-            FROM {tgt_layer}.entidades.fact_certificate_daily
-            WHERE status = 'downloadable'
+                ce.course_cd,
+                ce.edition,
+                org.org_cd,
+                fc.user_key
+            FROM       {tgt_layer}.entidades.fact_certificate_daily fc
+            JOIN       ce_all_versions  ce  ON fc.course_edition_key = ce.course_edition_key
+            JOIN       org_all_versions org ON fc.org_key            = org.org_key
+            WHERE fc.status = 'downloadable'
         ),
 
         certificate_agg AS (
             SELECT
-                course_edition_key,
-                org_key,
+                course_cd,
+                edition,
+                org_cd,
                 COUNT(*) AS total_certificates
             FROM certificate_user_summary
-            GROUP BY course_edition_key, org_key
+            GROUP BY course_cd, edition, org_cd
         )
 
-        SELECT /*+ BROADCAST(dce, do) */
-            do.org_cd,
-            do.short_name                                                       AS org_short_name,
-            dce.display_number                                                  AS course_cd,
-            dce.display_name                                                    AS course_name,
-            dce.edition,
-            dce.start_date,
-            dce.end_date,
-            dce.end_date < current_timestamp()                                  AS course_ended,
+        SELECT /*+ BROADCAST(ce_current, org_current) */
+            ea.org_cd,
+            org_curr.org_short_name,
+            ea.course_cd,
+            ce_curr.course_name,
+            ea.edition,
+            ce_curr.start_date,
+            ce_curr.end_date,
+            ce_curr.end_date < current_timestamp()                              AS course_ended,
             ea.total_enrolled,
             ea.total_unenrolled,
             ea.net_enrolled,
@@ -126,13 +170,14 @@ def _fact_conclusion_rate_agg_sql(tgt_layer: str) -> str:
             2)                                                                  AS conclusion_rate_pct
         FROM enrollment_agg ea
         LEFT JOIN certificate_agg ca
-            ON  ea.course_edition_key = ca.course_edition_key
-            AND ea.org_key             = ca.org_key
-        LEFT JOIN {tgt_layer}.entidades.dim_course_edition dce
-            ON  ea.course_edition_key = dce.course_edition_key
-            AND dce.key_end_date IS NULL
-        LEFT JOIN {tgt_layer}.entidades.dim_organization do
-            ON ea.org_key = do.org_key
+            ON  ea.course_cd = ca.course_cd
+            AND ea.edition   = ca.edition
+            AND ea.org_cd    = ca.org_cd
+        LEFT JOIN ce_current ce_curr
+            ON  ea.course_cd = ce_curr.course_cd
+            AND ea.edition   = ce_curr.edition
+        LEFT JOIN org_current org_curr
+            ON  ea.org_cd = org_curr.org_cd
     """
 
 
