@@ -30,12 +30,24 @@ def main():
 
     # Current-state lookup of role assignments. Full refresh daily — no
     # history is kept; the table answers "who has which role today?".
+    # user_username / user_email are denormalised from the active SCD2 row of
+    # dim_user so Superset RLS can join on Superset identity (username/email)
+    # without an extra hop.
+    # course_cd / edition come from the active SCD2 row of dim_course_edition,
+    # resolved from the source course_id (course-v1 string). is_org_wide is
+    # true for org-level roles (course_id NULL or empty) — used by Superset
+    # RLS to short-circuit course matching.
     spark.sql(f"""
         CREATE TABLE IF NOT EXISTS {tgt_layer}.{tgt_pipeline}.{tgt_table_name} (
             access_role_cd        INT       COMMENT 'Source row id from edxapp.student_courseaccessrole',
             user_cd               INT       COMMENT 'User id (matches edxapp auth_user.id / dim_user.user_cd)',
-            course_id             STRING    COMMENT 'Course identifier (course-v1/...)',
-            org                   STRING    COMMENT 'Organization short code as stored in source',
+            user_username         STRING    COMMENT 'Username from the active SCD2 row of dim_user',
+            user_email            STRING    COMMENT 'Email from the active SCD2 row of dim_user',
+            course_id             STRING    COMMENT 'Course-v1 identifier (course edition) as stored in source; empty for org-wide roles',
+            course_cd             STRING    COMMENT 'Course display code from dim_course_edition (active SCD2 row); NULL for org-wide roles',
+            edition               STRING    COMMENT 'Edition (RUN component) from dim_course_edition (active SCD2 row); NULL for org-wide roles',
+            org_cd                STRING    COMMENT 'Organization short code as stored in source',
+            is_org_wide           BOOLEAN   COMMENT 'True when role is granted at org level (course_id is NULL/empty)',
             role                  STRING    COMMENT 'Role granted (e.g. instructor, staff, beta_testers)',
             last_update_timestamp TIMESTAMP COMMENT 'ETL timestamp'
         )
@@ -49,13 +61,24 @@ def main():
 
     spark.sql(f"""
         INSERT OVERWRITE TABLE {tgt_layer}.{tgt_pipeline}.{tgt_table_name}
-        SELECT id        AS access_role_cd,
-               user_id   AS user_cd,
-               course_id,
-               org,
-               role,
-               current_timestamp() AS last_update_timestamp
-          FROM {src_layer}.{src_pipeline}.{src_table_name}
+        SELECT car.id                                                AS access_role_cd,
+               car.user_id                                           AS user_cd,
+               du.username                                           AS user_username,
+               du.email                                              AS user_email,
+               car.course_id,
+               dce.display_number                                    AS course_cd,
+               dce.edition                                           AS edition,
+               car.org                                               AS org_cd,
+               (car.course_id IS NULL OR car.course_id = '')         AS is_org_wide,
+               car.role,
+               current_timestamp()                                   AS last_update_timestamp
+          FROM       {src_layer}.{src_pipeline}.{src_table_name}    car
+          LEFT JOIN  {tgt_layer}.entidades.dim_user                 du
+                 ON  du.user_cd       = car.user_id
+                AND  du.key_end_date  = CAST('9999-12-31' AS TIMESTAMP)
+          LEFT JOIN  {tgt_layer}.entidades.dim_course_edition       dce
+                 ON  dce.course_edition_cd = car.course_id
+                AND  dce.key_end_date      = CAST('9999-12-31' AS TIMESTAMP)
     """)
 
     nr = spark.sql(f"SELECT COUNT(*) AS c FROM {tgt_layer}.{tgt_pipeline}.{tgt_table_name}").first()["c"]
