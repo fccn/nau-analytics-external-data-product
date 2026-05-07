@@ -5,3 +5,4 @@ utils/.
 .pyc
 .claude/settings.local.json
 src/gold/__pycache__/
+docs/build_adf.py

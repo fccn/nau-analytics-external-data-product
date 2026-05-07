@@ -12,19 +12,19 @@ logging.basicConfig(
     ]
 )
 
-def update_ctrl_table(spark_session: SparkSession, table_name:str,current_timestamp: str ,number_of_records:int,env: str) -> bool:
+def update_ctrl_table(spark_session: SparkSession, table_name:str,current_timestamp: str ,number_of_records:int,env: str, pipeline: str = "entidades") -> bool:
     try:
         spark_session.sql(f"""
             INSERT INTO  gold{env}.audit.pipeline_run_ctrl
-            VALUES('entidades', '{table_name}', '{current_timestamp}', {number_of_records})
+            VALUES('{pipeline}', '{table_name}', '{current_timestamp}', {number_of_records})
         """)
-        return True 
+        return True
     except Exception:
         return False
-    
-def get_max_timestamp_for_table(spark_session: SparkSession, table_name:str,env:str) -> str:
+
+def get_max_timestamp_for_table(spark_session: SparkSession, table_name:str,env:str, pipeline: str = "entidades") -> str:
     try:
-        query = f"SELECT NVL(max(last_execution_ts),'1900-01-01 00:00:00') as ts FROM gold{env}.audit.pipeline_run_ctrl WHERE table_name = '{table_name}' and pipeline = 'entidades'"
+        query = f"SELECT NVL(max(last_execution_ts),'1900-01-01 00:00:00') as ts FROM gold{env}.audit.pipeline_run_ctrl WHERE table_name = '{table_name}' and pipeline = '{pipeline}'"
         logging.info(query)
         START_DATE = spark_session.sql(query).first()["ts"]
     except Exception:
