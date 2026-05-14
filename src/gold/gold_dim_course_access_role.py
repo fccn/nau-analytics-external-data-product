@@ -78,7 +78,7 @@ def main():
                 AND  du.key_end_date  = CAST('9999-12-31' AS TIMESTAMP)
           LEFT JOIN  {tgt_layer}.entidades.dim_course_edition       dce
                  ON  dce.course_edition_cd = car.course_id
-                AND  dce.key_end_date      = CAST('9999-12-31' AS TIMESTAMP)
+                AND  dce.key_end_date      IS NULL
     """)
 
     nr = spark.sql(f"SELECT COUNT(*) AS c FROM {tgt_layer}.{tgt_pipeline}.{tgt_table_name}").first()["c"]
