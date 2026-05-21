@@ -192,6 +192,20 @@ def main():
     end_dt   = coalesce(col("end"), col("end_date"))
     adv_start_ts = to_timestamp(col("advertised_start"))
 
+    # Normaliza chars invisíveis (ZWSP U+200B, ZWNJ U+200C, ZWJ U+200D, BOM
+    # U+FEFF) e colapsa whitespace para evitar criar versões SCD2 espúrias
+    # quando o admin "limpa" o display_name no LMS removendo apenas chars
+    # invisíveis. Sem isto, dois display_name visualmente idênticos partem
+    # aggs que agrupam por course_name e quebram filtros Superset por título.
+    # Construído com chr() porque chars invisíveis em literais perdem-se em edits.
+    INVISIBLE_CHARS_RE = "[" + "".join(chr(c) for c in (0x200B, 0x200C, 0x200D, 0xFEFF)) + "]"
+    def clean_text(c):
+        stripped = F.regexp_replace(c, INVISIBLE_CHARS_RE, '')
+        collapsed = F.regexp_replace(stripped, r'\s+', ' ')
+        return F.trim(collapsed)
+    display_name_clean = clean_text(col("display_name"))
+    short_description_clean = clean_text(col("short_description"))
+
     business_cols = [
         "org_key", "edition", "display_name", "display_number", "short_description",
         "start_date", "end_date", "advertised_start", "version", "enrollment_start",
@@ -211,9 +225,9 @@ def main():
             col("id").alias("course_edition_cd"),
             regexp_extract(col("id"), r'([^+]+)(?:\+ccx@.*)?$', 1).alias("edition"),
             col("org_key"),
-            col("display_name"),
+            display_name_clean.alias("display_name"),
             col("display_number_with_default").alias("display_number"),
-            col("short_description"),
+            short_description_clean.alias("short_description"),
             start_dt.cast(TimestampType()).alias("start_date"),
             end_dt.cast(TimestampType()).alias("end_date"),
             adv_start_ts.alias("advertised_start"),

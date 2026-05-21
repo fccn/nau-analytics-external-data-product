@@ -189,36 +189,71 @@ def _fact_conclusion_rate_agg_sql(tgt_layer: str) -> str:
 
 # ────────────────────────────────────────────────────────────
 # Superset Dataset: Tickets vs Cursos
-# Unchanged — already lean, driven by low-volume course_edition_daily.
+#
+# FIX: dim_course_edition consolidada por chave natural antes do join.
+# Sem isto, múltiplas versões SCD2 de uma mesma (course_cd, edition)
+# produziriam display_names diferentes (quebra filtros Superset) e
+# corromperiam o cálculo de is_latest_edition — start_date é escolhido
+# por MAX_BY(start_date, key_start_date) por (course_cd, edition) antes
+# de se determinar a edição mais recente do curso.
 # ────────────────────────────────────────────────────────────
 def _tickets_vs_courses_agg_sql(tgt_layer: str) -> str:
     return f"""
-        SELECT
+        WITH ce_all_versions AS (
+            SELECT course_edition_key,
+                   display_number AS course_cd,
+                   edition
+            FROM {tgt_layer}.entidades.dim_course_edition
+        ),
+        ce_per_edition AS (
+            SELECT display_number AS course_cd,
+                   edition,
+                   MAX_BY(display_name, key_start_date) AS course_name,
+                   MAX_BY(start_date,   key_start_date) AS start_date
+            FROM {tgt_layer}.entidades.dim_course_edition
+            GROUP BY display_number, edition
+        ),
+        ce_latest_per_course AS (
+            SELECT course_cd,
+                   edition,
+                   course_name,
+                   start_date,
+                   CASE
+                       WHEN start_date = MAX(start_date) OVER (PARTITION BY course_cd)
+                       THEN 1 ELSE 0
+                   END AS is_latest_edition
+            FROM ce_per_edition
+        ),
+        org_current AS (
+            SELECT org_key,
+                   MAX_BY(org_cd,     key_start_date) AS org_cd,
+                   MAX_BY(name,       key_start_date) AS org_name,
+                   MAX_BY(short_name, key_start_date) AS org_short_name
+            FROM {tgt_layer}.entidades.dim_organization
+            GROUP BY org_key
+        )
+        SELECT /*+ BROADCAST(ce_latest_per_course, org_current) */
             fce.day_key,
-            do.org_cd,
-            do.name                                                         AS org_name,
-            do.short_name                                                   AS org_short_name,
+            org_curr.org_cd,
+            org_curr.org_name,
+            org_curr.org_short_name,
             fce.course_cd,
-            dce.display_name                                                AS course_name,
-            dce.edition,
-            CASE
-                WHEN dce.start_date = MAX(dce.start_date) OVER (PARTITION BY fce.course_cd)
-                THEN 1
-                ELSE 0
-            END                                                             AS is_latest_edition,
-            CASE
-                WHEN dce.start_date = MAX(dce.start_date) OVER (PARTITION BY fce.course_cd)
-                THEN 'Novos Cursos'
-                ELSE 'Reedições'
+            ce_latest.course_name,
+            ce_latest.edition,
+            ce_latest.is_latest_edition,
+            CASE WHEN ce_latest.is_latest_edition = 1
+                 THEN 'Novos Cursos' ELSE 'Reedições'
             END                                                             AS edition_type,
             t.ticket_type_origin,
             t.ticket_key
-        FROM {tgt_layer}.entidades.fact_course_edition_daily fce
-        LEFT JOIN {tgt_layer}.entidades.dim_organization do
-            ON fce.org_key = do.org_key
-        LEFT JOIN {tgt_layer}.entidades.dim_course_edition dce
-            ON fce.course_edition_key = dce.course_edition_key
-           AND fce.org_key = dce.org_key
+        FROM       {tgt_layer}.entidades.fact_course_edition_daily fce
+        LEFT JOIN  org_current org_curr
+                ON fce.org_key = org_curr.org_key
+        LEFT JOIN  ce_all_versions ce
+                ON fce.course_edition_key = ce.course_edition_key
+        LEFT JOIN  ce_latest_per_course ce_latest
+                ON ce.course_cd = ce_latest.course_cd
+               AND ce.edition   = ce_latest.edition
         LEFT JOIN (
             SELECT
                 DATE(created)       AS ticket_date,
@@ -233,16 +268,46 @@ def _tickets_vs_courses_agg_sql(tgt_layer: str) -> str:
 # Superset Dataset: Certificates
 # Pre-aggregated to (day_key, org, course, edition, month) grain.
 # Superset metrics: SUM(certificate_count)
+#
+# FIX: Agrupado por chaves naturais (display_number + edition + org_cd) e
+# display_name escolhido com MAX_BY(.., key_start_date) — mesma estratégia
+# já aplicada em fact_conclusion_rate_agg. Sem isto, qualquer mudança de
+# display_name (incluindo whitespace invisível) entre versões SCD2 parte
+# o curso em múltiplas linhas no agg, e um filtro Superset por course_name
+# captura só uma das versões — KPIs sub-contagem.
 # ────────────────────────────────────────────────────────────
 def _certificates_agg_sql(tgt_layer: str) -> str:
     return f"""
-        SELECT
+        WITH ce_all_versions AS (
+            SELECT course_edition_key,
+                   display_number AS course_cd,
+                   edition
+            FROM {tgt_layer}.entidades.dim_course_edition
+        ),
+        org_all_versions AS (
+            SELECT org_key, org_cd
+            FROM {tgt_layer}.entidades.dim_organization
+        ),
+        ce_current AS (
+            SELECT display_number AS course_cd,
+                   edition,
+                   MAX_BY(display_name, key_start_date) AS course_name
+            FROM {tgt_layer}.entidades.dim_course_edition
+            GROUP BY display_number, edition
+        ),
+        org_current AS (
+            SELECT org_cd,
+                   MAX_BY(short_name, key_start_date) AS org_short_name
+            FROM {tgt_layer}.entidades.dim_organization
+            GROUP BY org_cd
+        )
+        SELECT /*+ BROADCAST(ce_current, org_current) */
             fc.day_key,
-            do.org_cd,
-            do.short_name                               AS org_short_name,
-            dce.display_number                          AS course_cd,
-            dce.display_name                            AS course_name,
-            dce.edition,
+            org.org_cd,
+            org_curr.org_short_name,
+            ce.course_cd,
+            ce_curr.course_name,
+            ce.edition,
             CONCAT(
                 CAST(dt.year AS STRING),
                 LPAD(CAST(dt.month AS STRING), 2, '0'),
@@ -251,21 +316,21 @@ def _certificates_agg_sql(tgt_layer: str) -> str:
             )                                           AS month_name,
             COUNT(DISTINCT fc.certificate_cd)           AS certificate_count
         FROM {tgt_layer}.entidades.fact_certificate_daily fc
-        LEFT JOIN {tgt_layer}.entidades.dim_organization do
-            ON fc.org_key = do.org_key
-        LEFT JOIN {tgt_layer}.entidades.dim_course_edition dce
-            ON fc.course_edition_key = dce.course_edition_key
-           AND fc.org_key = dce.org_key
-        JOIN {tgt_layer}.entidades.dim_time dt
-            ON fc.day_key = dt.date
+        JOIN       ce_all_versions   ce       ON fc.course_edition_key = ce.course_edition_key
+        JOIN       org_all_versions  org      ON fc.org_key            = org.org_key
+        LEFT JOIN  ce_current        ce_curr  ON ce.course_cd          = ce_curr.course_cd
+                                              AND ce.edition           = ce_curr.edition
+        LEFT JOIN  org_current       org_curr ON org.org_cd            = org_curr.org_cd
+        JOIN       {tgt_layer}.entidades.dim_time dt
+                                              ON fc.day_key            = dt.date
         WHERE fc.status = 'downloadable'
         GROUP BY
             fc.day_key,
-            do.org_cd,
-            do.short_name,
-            dce.display_number,
-            dce.display_name,
-            dce.edition,
+            org.org_cd,
+            org_curr.org_short_name,
+            ce.course_cd,
+            ce_curr.course_name,
+            ce.edition,
             dt.year,
             dt.month,
             dt.month_name
@@ -276,16 +341,41 @@ def _certificates_agg_sql(tgt_layer: str) -> str:
 # Superset Dataset: Inscrições vs Certificados
 # Pre-aggregated with SUM(total_days_to_conclusion) so Superset can compute
 # AVG as SUM(total_days_to_conclusion) / SUM(certificate_count).
+#
+# FIX: Agrupado por chaves naturais. Ver comentário em _certificates_agg_sql.
 # ────────────────────────────────────────────────────────────
 def _enrollments_vs_certificates_agg_sql(tgt_layer: str) -> str:
     return f"""
-        SELECT
+        WITH ce_all_versions AS (
+            SELECT course_edition_key,
+                   display_number AS course_cd,
+                   edition
+            FROM {tgt_layer}.entidades.dim_course_edition
+        ),
+        org_all_versions AS (
+            SELECT org_key, org_cd
+            FROM {tgt_layer}.entidades.dim_organization
+        ),
+        ce_current AS (
+            SELECT display_number AS course_cd,
+                   edition,
+                   MAX_BY(display_name, key_start_date) AS course_name
+            FROM {tgt_layer}.entidades.dim_course_edition
+            GROUP BY display_number, edition
+        ),
+        org_current AS (
+            SELECT org_cd,
+                   MAX_BY(short_name, key_start_date) AS org_short_name
+            FROM {tgt_layer}.entidades.dim_organization
+            GROUP BY org_cd
+        )
+        SELECT /*+ BROADCAST(ce_current, org_current) */
             fce.day_key,
-            do.org_cd,
-            do.short_name                                               AS org_short_name,
-            dce.display_number                                          AS course_cd,
-            dce.display_name                                            AS course_name,
-            dce.edition,
+            org.org_cd,
+            org_curr.org_short_name,
+            ce.course_cd,
+            ce_curr.course_name,
+            ce.edition,
             CONCAT(
                 CAST(dt.year AS STRING),
                 ' - ',
@@ -303,26 +393,26 @@ def _enrollments_vs_certificates_agg_sql(tgt_layer: str) -> str:
                 ELSE 0
             END)                                                        AS total_days_to_conclusion
         FROM {tgt_layer}.entidades.fact_course_enrollment_daily fce
-        LEFT JOIN {tgt_layer}.entidades.dim_organization do
-            ON fce.org_key = do.org_key
-        LEFT JOIN {tgt_layer}.entidades.dim_course_edition dce
-            ON fce.course_edition_key = dce.course_edition_key
-           AND fce.org_key = dce.org_key
-        JOIN {tgt_layer}.entidades.dim_time dt
-            ON fce.day_key = dt.date
-        LEFT JOIN {tgt_layer}.entidades.fact_certificate_daily fc
-            ON fce.day_key = fc.day_key
-           AND fce.course_edition_key = fc.course_edition_key
-           AND fce.user_key = fc.user_key
-           AND fce.org_key = fc.org_key
-           AND fc.status = 'downloadable'
+        JOIN       ce_all_versions   ce       ON fce.course_edition_key = ce.course_edition_key
+        JOIN       org_all_versions  org      ON fce.org_key            = org.org_key
+        LEFT JOIN  ce_current        ce_curr  ON ce.course_cd           = ce_curr.course_cd
+                                              AND ce.edition            = ce_curr.edition
+        LEFT JOIN  org_current       org_curr ON org.org_cd             = org_curr.org_cd
+        JOIN       {tgt_layer}.entidades.dim_time dt
+                                              ON fce.day_key            = dt.date
+        LEFT JOIN  {tgt_layer}.entidades.fact_certificate_daily fc
+                                              ON fce.day_key            = fc.day_key
+                                             AND fce.course_edition_key = fc.course_edition_key
+                                             AND fce.user_key           = fc.user_key
+                                             AND fce.org_key            = fc.org_key
+                                             AND fc.status              = 'downloadable'
         GROUP BY
             fce.day_key,
-            do.org_cd,
-            do.short_name,
-            dce.display_number,
-            dce.display_name,
-            dce.edition,
+            org.org_cd,
+            org_curr.org_short_name,
+            ce.course_cd,
+            ce_curr.course_name,
+            ce.edition,
             dt.year,
             dt.month_name,
             fc.certificate_cd
@@ -356,15 +446,39 @@ def _enrollments_vs_certificates_agg_sql(tgt_layer: str) -> str:
 #                   SUM(active_students) [per course], MAX(active_students) [stock]
 # ────────────────────────────────────────────────────────────
 def _enrollment_flow_agg_sql(tgt_layer: str, day_filter_sql: str = "") -> str:
+    # FIX: chaves naturais + MAX_BY(display_name) — ver _certificates_agg_sql.
     return f"""
-        WITH base AS (
-            SELECT /*+ BROADCAST(dorg, dce, dt) */
+        WITH ce_all_versions AS (
+            SELECT course_edition_key,
+                   display_number AS course_cd,
+                   edition
+            FROM {tgt_layer}.entidades.dim_course_edition
+        ),
+        org_all_versions AS (
+            SELECT org_key, org_cd
+            FROM {tgt_layer}.entidades.dim_organization
+        ),
+        ce_current AS (
+            SELECT display_number AS course_cd,
+                   edition,
+                   MAX_BY(display_name, key_start_date) AS course_name
+            FROM {tgt_layer}.entidades.dim_course_edition
+            GROUP BY display_number, edition
+        ),
+        org_current AS (
+            SELECT org_cd,
+                   MAX_BY(short_name, key_start_date) AS org_short_name
+            FROM {tgt_layer}.entidades.dim_organization
+            GROUP BY org_cd
+        ),
+        base AS (
+            SELECT /*+ BROADCAST(ce_current, org_current, dt) */
                 fce.day_key,
-                dorg.org_cd,
-                dorg.short_name                                             AS org_short_name,
-                dce.display_number                                          AS course_cd,
-                dce.display_name                                            AS course_name,
-                dce.edition,
+                org.org_cd,
+                org_curr.org_short_name,
+                ce.course_cd,
+                ce_curr.course_name,
+                ce.edition,
                 CONCAT(
                     CAST(dt.year  AS STRING),
                     LPAD(CAST(dt.month AS STRING), 2, '0'),
@@ -384,13 +498,13 @@ def _enrollment_flow_agg_sql(tgt_layer: str, day_filter_sql: str = "") -> str:
                     THEN 1 ELSE 0
                 END                                                         AS is_new_unenrollment
             FROM       {tgt_layer}.entidades.fact_course_enrollment_daily   fce
-            LEFT JOIN  {tgt_layer}.entidades.dim_organization               dorg
-                   ON  fce.org_key = dorg.org_key
-            LEFT JOIN  {tgt_layer}.entidades.dim_course_edition             dce
-                   ON  fce.course_edition_key = dce.course_edition_key
-                  AND  fce.org_key            = dce.org_key
-            JOIN       {tgt_layer}.entidades.dim_time                       dt
-                   ON  fce.day_key = dt.date
+            JOIN       ce_all_versions   ce       ON fce.course_edition_key = ce.course_edition_key
+            JOIN       org_all_versions  org      ON fce.org_key            = org.org_key
+            LEFT JOIN  ce_current        ce_curr  ON ce.course_cd           = ce_curr.course_cd
+                                                  AND ce.edition            = ce_curr.edition
+            LEFT JOIN  org_current       org_curr ON org.org_cd             = org_curr.org_cd
+            JOIN       {tgt_layer}.entidades.dim_time dt
+                                                  ON fce.day_key            = dt.date
             WHERE 1=1
               {day_filter_sql}
         ),
@@ -452,39 +566,90 @@ def _enrollment_flow_agg_sql(tgt_layer: str, day_filter_sql: str = "") -> str:
 # run, so partition-level overwrite isn't viable.
 # ────────────────────────────────────────────────────────────
 def _enrollment_users_agg_sql(tgt_layer: str) -> str:
+    # FIX: agrega por chaves naturais (course_cd, edition, org_cd, user_cd) em
+    # vez de surrogates SCD2 — consolida múltiplas versões SCD2 num único
+    # registo user-grain. Sem isto, um user re-aparece em N linhas se a dim
+    # do curso ou do user tiver versões diferentes ao longo do tempo, e
+    # filtros Superset por course_name capturam apenas uma das versões.
+    # user_key projectado mostra a versão MAX_BY(key_start_date) — útil para
+    # joins ad-hoc mas o grão real é por user_cd natural.
     return f"""
-        WITH user_edition_agg AS (
+        WITH ce_all_versions AS (
+            SELECT course_edition_key,
+                   display_number AS course_cd,
+                   edition
+            FROM {tgt_layer}.entidades.dim_course_edition
+        ),
+        org_all_versions AS (
+            SELECT org_key, org_cd
+            FROM {tgt_layer}.entidades.dim_organization
+        ),
+        user_all_versions AS (
+            SELECT user_key, user_cd
+            FROM {tgt_layer}.entidades.dim_user
+        ),
+        ce_current AS (
+            SELECT display_number AS course_cd,
+                   edition,
+                   MAX_BY(display_name, key_start_date) AS course_name
+            FROM {tgt_layer}.entidades.dim_course_edition
+            GROUP BY display_number, edition
+        ),
+        org_current AS (
+            SELECT org_cd,
+                   MAX_BY(short_name, key_start_date) AS org_short_name
+            FROM {tgt_layer}.entidades.dim_organization
+            GROUP BY org_cd
+        ),
+        user_current AS (
+            SELECT user_cd,
+                   MAX_BY(user_key, key_start_date) AS user_key
+            FROM {tgt_layer}.entidades.dim_user
+            GROUP BY user_cd
+        ),
+        fact_with_natural_keys AS (
             SELECT
-                course_edition_key,
-                org_key,
-                user_key,
+                ce.course_cd,
+                ce.edition,
+                org.org_cd,
+                u.user_cd,
+                fce.day_key,
+                fce.is_enrolled
+            FROM       {tgt_layer}.entidades.fact_course_enrollment_daily fce
+            JOIN       ce_all_versions   ce  ON fce.course_edition_key = ce.course_edition_key
+            JOIN       org_all_versions  org ON fce.org_key            = org.org_key
+            JOIN       user_all_versions u   ON fce.user_key           = u.user_key
+        ),
+        user_edition_agg AS (
+            SELECT
+                course_cd,
+                edition,
+                org_cd,
+                user_cd,
                 MIN(day_key)                                          AS first_enrollment_date,
                 MAX(CASE WHEN is_enrolled     THEN day_key END)       AS last_active_date,
                 MAX(CASE WHEN NOT is_enrolled THEN day_key END)       AS last_unenrollment_date,
                 MAX_BY(is_enrolled, day_key)                          AS is_currently_enrolled
-            FROM {tgt_layer}.entidades.fact_course_enrollment_daily
-            GROUP BY course_edition_key, org_key, user_key
+            FROM fact_with_natural_keys
+            GROUP BY course_cd, edition, org_cd, user_cd
         )
-        SELECT /*+ BROADCAST(dorg, dce) */
-            dorg.org_cd,
-            dorg.short_name                     AS org_short_name,
-            dce.display_number                  AS course_cd,
-            dce.display_name                    AS course_name,
-            dce.edition,
-            uea.user_key,
-            du.user_cd,
+        SELECT /*+ BROADCAST(ce_current, org_current, user_current) */
+            uea.org_cd,
+            org_curr.org_short_name,
+            uea.course_cd,
+            ce_curr.course_name,
+            uea.edition,
+            u_curr.user_key,
+            uea.user_cd,
             uea.first_enrollment_date,
             uea.last_active_date,
             uea.last_unenrollment_date,
             uea.is_currently_enrolled
-        FROM       user_edition_agg                                   uea
-        LEFT JOIN  {tgt_layer}.entidades.dim_organization             dorg
-               ON  uea.org_key = dorg.org_key
-        LEFT JOIN  {tgt_layer}.entidades.dim_course_edition           dce
-               ON  uea.course_edition_key = dce.course_edition_key
-              AND  uea.org_key            = dce.org_key
-        LEFT JOIN  {tgt_layer}.entidades.dim_user                     du
-               ON  uea.user_key = du.user_key
+        FROM       user_edition_agg uea
+        LEFT JOIN  ce_current       ce_curr  ON uea.course_cd = ce_curr.course_cd
+                                            AND uea.edition   = ce_curr.edition
+        LEFT JOIN  org_current      org_curr ON uea.org_cd    = org_curr.org_cd
+        LEFT JOIN  user_current     u_curr   ON uea.user_cd   = u_curr.user_cd
     """
 
 
@@ -507,12 +672,20 @@ AGG_TABLES: list[AggTable] = [
         output_partitions  = 10,
         full_refresh       = True,
     ),
+    # FIX: full_refresh=True forçado nestes 4 aggs porque o refactor para
+    # chaves naturais (MAX_BY(display_name, key_start_date) por course_cd+edition)
+    # muda o GROUP BY → as partições materializadas com o esquema antigo
+    # têm linhas extra (uma por SCD2 version de display_name) que o
+    # overwritePartitions() incremental não limpa. Após pelo menos um run
+    # full_refresh limpo, podem ser revertidos para incremental se a carga
+    # se tornar problemática.
     AggTable(
         name               = "tickets_vs_courses_agg",
         sql_fn             = _tickets_vs_courses_agg_sql,
         partition_by       = "days(day_key)",
         sort_order         = "day_key ASC, course_cd ASC, ticket_type_origin ASC",
         output_partitions  = 5,
+        full_refresh       = True,
     ),
     AggTable(
         name               = "certificates_agg",
@@ -520,6 +693,7 @@ AGG_TABLES: list[AggTable] = [
         partition_by       = "days(day_key)",
         sort_order         = "day_key ASC, org_cd ASC, course_cd ASC",
         output_partitions  = 10,
+        full_refresh       = True,
     ),
     AggTable(
         name               = "enrollments_vs_certificates_agg",
@@ -527,6 +701,7 @@ AGG_TABLES: list[AggTable] = [
         partition_by       = "days(day_key)",
         sort_order         = "day_key ASC, org_cd ASC, course_cd ASC",
         output_partitions  = 20,
+        full_refresh       = True,
     ),
     AggTable(
         name                 = "enrollment_flow_agg",
@@ -535,6 +710,7 @@ AGG_TABLES: list[AggTable] = [
         sort_order           = "day_key ASC, org_cd ASC, course_cd ASC",
         output_partitions    = 20,
         pushdown_day_filter  = True,
+        full_refresh         = True,
     ),
     AggTable(
         name               = "enrollment_users_agg",
