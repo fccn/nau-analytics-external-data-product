@@ -151,6 +151,15 @@ def main():
     # ---------------------------------------------------------
     # 5) Project fact columns
     # ---------------------------------------------------------
+    # Defesa em profundidade: ignora o DEFAULT_START_DATE do Open edX
+    # (2030-01-01) caso escape da dim. Sem isto, certificados emitidos
+    # quando uma SCD2 ainda tinha o sentinela ficam com a coluna no futuro.
+    LMS_DEFAULT_START = F.lit('2030-01-01 00:00:00').cast("timestamp")
+    clean_start = F.when(col("y.start_date") == LMS_DEFAULT_START, None) \
+                   .otherwise(col("y.start_date"))
+    clean_enr   = F.when(col("y.enrollment_start") == LMS_DEFAULT_START, None) \
+                   .otherwise(col("y.enrollment_start"))
+
     fact_point = (
         with_user
         .select(
@@ -159,7 +168,7 @@ def main():
             col("y.course_edition_key").alias("course_edition_key"),
             col("y.user_key").alias("user_key"),
             col("y.org_key").alias("org_key"),
-            F.coalesce(col("y.enrollment_start"), col("y.start_date"))
+            F.coalesce(clean_enr, clean_start)
                 .cast(TimestampType())
                 .alias("course_enrollment_start_date"),
             col("y.created_date").alias("certificate_issue_date"),
