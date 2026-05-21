@@ -172,7 +172,14 @@ def main():
     # =============================================================
     # 3) Project business attributes
     # =============================================================
-    start_dt = coalesce(col("start"), col("start_date"))
+    # Open edX grava 2030-01-01 (DEFAULT_START_DATE) em cursos sem data
+    # configurada. Tratar como NULL para não propagar o sentinela aos factos.
+    LMS_DEFAULT_START = lit('2030-01-01 00:00:00').cast(TimestampType())
+    def drop_lms_sentinel(c):
+        ts = c.cast(TimestampType())
+        return when(ts == LMS_DEFAULT_START, None).otherwise(ts)
+
+    start_dt = drop_lms_sentinel(coalesce(col("start"), col("start_date")))
     end_dt   = coalesce(col("end"), col("end_date"))
     adv_start_ts = to_timestamp(col("advertised_start"))
 
@@ -202,7 +209,7 @@ def main():
             end_dt.cast(TimestampType()).alias("end_date"),
             adv_start_ts.alias("advertised_start"),
             col("version").cast("string"),
-            col("enrollment_start").cast(TimestampType()),
+            drop_lms_sentinel(col("enrollment_start")).alias("enrollment_start"),
             col("enrollment_end").cast(TimestampType()),
             col("certificates_display_behavior"),
             col("language"),
