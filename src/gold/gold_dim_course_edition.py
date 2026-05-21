@@ -172,12 +172,21 @@ def main():
     # =============================================================
     # 3) Project business attributes
     # =============================================================
-    # Open edX grava 2030-01-01 (DEFAULT_START_DATE) em cursos sem data
-    # configurada. Tratar como NULL para não propagar o sentinela aos factos.
-    LMS_DEFAULT_START = lit('2030-01-01 00:00:00').cast(TimestampType())
+    # Open edX grava um DEFAULT_START_DATE sentinela em cursos sem data
+    # configurada. 2030-01-01 é o valor histórico (releases até Sumac);
+    # 2040-01-01 é o valor actual no master do edx-platform
+    # (xmodule/course_metadata_utils.py). Listar ambos para que um upgrade
+    # de versão do LMS não nos volte a apanhar de surpresa.
+    LMS_DEFAULT_START_SENTINELS = [
+        lit('2030-01-01 00:00:00').cast(TimestampType()),
+        lit('2040-01-01 00:00:00').cast(TimestampType()),
+    ]
     def drop_lms_sentinel(c):
         ts = c.cast(TimestampType())
-        return when(ts == LMS_DEFAULT_START, None).otherwise(ts)
+        is_sentinel = lit(False)
+        for s in LMS_DEFAULT_START_SENTINELS:
+            is_sentinel = is_sentinel | (ts == s)
+        return when(is_sentinel, None).otherwise(ts)
 
     start_dt = drop_lms_sentinel(coalesce(col("start"), col("start_date")))
     end_dt   = coalesce(col("end"), col("end_date"))

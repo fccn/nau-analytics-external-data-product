@@ -175,13 +175,21 @@ def main():
     # 5) JOIN with dim_course_edition (SCD2)
     # ------------------------------
     # Defesa em profundidade: a dim já normaliza, mas se uma sentinela do LMS
-    # (DEFAULT_START_DATE = 2030-01-01) escapar, tratá-la como NULL aqui evita
-    # que ce_start_date force o effective_start para o futuro e colapse a
-    # expansão diária numa única linha em 2030-01-01.
-    LMS_DEFAULT_START = F.lit('2030-01-01 00:00:00').cast("timestamp")
-    clean_dce_start = F.when(F.col("dce.start_date") == LMS_DEFAULT_START, None) \
+    # escapar, tratá-la como NULL aqui evita que ce_start_date force o
+    # effective_start para o futuro e colapse a expansão diária numa única
+    # linha sentinela. Listamos 2030 (releases até Sumac) e 2040 (master).
+    LMS_DEFAULT_START_SENTINELS = [
+        F.lit('2030-01-01 00:00:00').cast("timestamp"),
+        F.lit('2040-01-01 00:00:00').cast("timestamp"),
+    ]
+    def _is_lms_sentinel(c):
+        cond = F.lit(False)
+        for s in LMS_DEFAULT_START_SENTINELS:
+            cond = cond | (c == s)
+        return cond
+    clean_dce_start = F.when(_is_lms_sentinel(F.col("dce.start_date")), None) \
                        .otherwise(F.col("dce.start_date"))
-    clean_dce_enr   = F.when(F.col("dce.enrollment_start") == LMS_DEFAULT_START, None) \
+    clean_dce_enr   = F.when(_is_lms_sentinel(F.col("dce.enrollment_start")), None) \
                        .otherwise(F.col("dce.enrollment_start"))
 
     fact_with_course = (

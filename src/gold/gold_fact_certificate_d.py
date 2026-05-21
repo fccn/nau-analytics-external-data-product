@@ -151,13 +151,21 @@ def main():
     # ---------------------------------------------------------
     # 5) Project fact columns
     # ---------------------------------------------------------
-    # Defesa em profundidade: ignora o DEFAULT_START_DATE do Open edX
-    # (2030-01-01) caso escape da dim. Sem isto, certificados emitidos
-    # quando uma SCD2 ainda tinha o sentinela ficam com a coluna no futuro.
-    LMS_DEFAULT_START = F.lit('2030-01-01 00:00:00').cast("timestamp")
-    clean_start = F.when(col("y.start_date") == LMS_DEFAULT_START, None) \
+    # Defesa em profundidade: ignora o DEFAULT_START_DATE sentinela do Open
+    # edX caso escape da dim. 2030-01-01 é o valor histórico (releases até
+    # Sumac), 2040-01-01 é o valor actual no master do edx-platform.
+    LMS_DEFAULT_START_SENTINELS = [
+        F.lit('2030-01-01 00:00:00').cast("timestamp"),
+        F.lit('2040-01-01 00:00:00').cast("timestamp"),
+    ]
+    def _is_lms_sentinel(c):
+        cond = F.lit(False)
+        for s in LMS_DEFAULT_START_SENTINELS:
+            cond = cond | (c == s)
+        return cond
+    clean_start = F.when(_is_lms_sentinel(col("y.start_date")), None) \
                    .otherwise(col("y.start_date"))
-    clean_enr   = F.when(col("y.enrollment_start") == LMS_DEFAULT_START, None) \
+    clean_enr   = F.when(_is_lms_sentinel(col("y.enrollment_start")), None) \
                    .otherwise(col("y.enrollment_start"))
 
     fact_point = (
