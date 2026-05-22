@@ -447,6 +447,18 @@ def _enrollments_vs_certificates_agg_sql(tgt_layer: str) -> str:
 # ────────────────────────────────────────────────────────────
 def _enrollment_flow_agg_sql(tgt_layer: str, day_filter_sql: str = "") -> str:
     # FIX: chaves naturais + MAX_BY(display_name) — ver _certificates_agg_sql.
+    #
+    # FIX (is_new_enrollment / is_new_unenrollment): comparar com
+    # course_enrollment_start_date / unenrollment_date falha quando o aluno
+    # se inscreve antes do start_date do curso — a expansão diária arranca
+    # em ce_start (fact_course_enrollment_d.effective_start =
+    # greatest(st_aluno, ce_start)) e o primeiro day_key na fact não bate
+    # com a data de criação da inscrição. Marcamos new_enrollment no
+    # primeiro day_key observado por course_enrollment_cd, e
+    # new_unenrollment no último (apenas se unenrollment_date estiver
+    # definida — protege contra cursos que apenas terminaram).
+    # A CTE enrolment_bounds faz scan global do fact (sem o day_filter)
+    # para não ser corrompida pelo pushdown_day_filter.
     return f"""
         WITH ce_all_versions AS (
             SELECT course_edition_key,
@@ -471,6 +483,14 @@ def _enrollment_flow_agg_sql(tgt_layer: str, day_filter_sql: str = "") -> str:
             FROM {tgt_layer}.entidades.dim_organization
             GROUP BY org_cd
         ),
+        enrolment_bounds AS (
+            SELECT
+                course_enrollment_cd,
+                MIN(day_key) AS first_day_in_fact,
+                MAX(day_key) AS last_day_in_fact
+            FROM {tgt_layer}.entidades.fact_course_enrollment_daily
+            GROUP BY course_enrollment_cd
+        ),
         base AS (
             SELECT /*+ BROADCAST(ce_current, org_current, dt) */
                 fce.day_key,
@@ -489,17 +509,18 @@ def _enrollment_flow_agg_sql(tgt_layer: str, day_filter_sql: str = "") -> str:
                 fce.course_enrollment_cd,
                 fce.is_enrolled,
                 CASE
-                    WHEN fce.day_key = CAST(fce.course_enrollment_start_date AS DATE)
+                    WHEN fce.day_key = bounds.first_day_in_fact
                     THEN 1 ELSE 0
                 END                                                         AS is_new_enrollment,
                 CASE
                     WHEN fce.unenrollment_date IS NOT NULL
-                     AND fce.day_key = CAST(fce.unenrollment_date AS DATE)
+                     AND fce.day_key = bounds.last_day_in_fact
                     THEN 1 ELSE 0
                 END                                                         AS is_new_unenrollment
             FROM       {tgt_layer}.entidades.fact_course_enrollment_daily   fce
             JOIN       ce_all_versions   ce       ON fce.course_edition_key = ce.course_edition_key
             JOIN       org_all_versions  org      ON fce.org_key            = org.org_key
+            JOIN       enrolment_bounds  bounds   ON fce.course_enrollment_cd = bounds.course_enrollment_cd
             LEFT JOIN  ce_current        ce_curr  ON ce.course_cd           = ce_curr.course_cd
                                                   AND ce.edition            = ce_curr.edition
             LEFT JOIN  org_current       org_curr ON org.org_cd             = org_curr.org_cd
