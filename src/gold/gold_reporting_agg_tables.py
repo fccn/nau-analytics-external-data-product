@@ -693,20 +693,12 @@ AGG_TABLES: list[AggTable] = [
         output_partitions  = 10,
         full_refresh       = True,
     ),
-    # FIX: full_refresh=True forçado nestes 4 aggs porque o refactor para
-    # chaves naturais (MAX_BY(display_name, key_start_date) por course_cd+edition)
-    # muda o GROUP BY → as partições materializadas com o esquema antigo
-    # têm linhas extra (uma por SCD2 version de display_name) que o
-    # overwritePartitions() incremental não limpa. Após pelo menos um run
-    # full_refresh limpo, podem ser revertidos para incremental se a carga
-    # se tornar problemática.
     AggTable(
         name               = "tickets_vs_courses_agg",
         sql_fn             = _tickets_vs_courses_agg_sql,
         partition_by       = "days(day_key)",
         sort_order         = "day_key ASC, course_cd ASC, ticket_type_origin ASC",
         output_partitions  = 5,
-        full_refresh       = True,
     ),
     AggTable(
         name               = "certificates_agg",
@@ -714,7 +706,6 @@ AGG_TABLES: list[AggTable] = [
         partition_by       = "days(day_key)",
         sort_order         = "day_key ASC, org_cd ASC, course_cd ASC",
         output_partitions  = 10,
-        full_refresh       = True,
     ),
     AggTable(
         name               = "enrollments_vs_certificates_agg",
@@ -722,7 +713,6 @@ AGG_TABLES: list[AggTable] = [
         partition_by       = "days(day_key)",
         sort_order         = "day_key ASC, org_cd ASC, course_cd ASC",
         output_partitions  = 20,
-        full_refresh       = True,
     ),
     AggTable(
         name                 = "enrollment_flow_agg",
@@ -731,7 +721,6 @@ AGG_TABLES: list[AggTable] = [
         sort_order           = "day_key ASC, org_cd ASC, course_cd ASC",
         output_partitions    = 20,
         pushdown_day_filter  = True,
-        full_refresh         = True,
     ),
     AggTable(
         name               = "enrollment_users_agg",
