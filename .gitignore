@@ -1,2 +1,9 @@
 .env
 .mypy_cache
+utils/.
+.claude/.
+.pyc
+.claude/settings.local.json
+src/gold/__pycache__/
+docs/build_adf.py
+src/superset_rls/__pycache__/*

@@ -1,0 +1,304 @@
+<mxfile host="app.diagrams.net" modified="2026-04-27T00:00:00.000Z" agent="ClaudeCode" version="24.7.17" type="device">
+  <diagram name="Gold Layer ERD" id="gold-erd">
+    <mxGraphModel dx="1422" dy="811" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" value="Gold Layer — Star Schema (entidades)" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=18;fontStyle=1;strokeColor=none;fillColor=none" vertex="1" parent="1">
+          <mxGeometry x="500" y="20" width="600" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="dim_user" value="dim_user&#10;(SCD2)" style="shape=table;startSize=30;container=1;collapsible=0;childLayout=tableLayout;fontSize=12;fontStyle=1;fillColor=#dae8fc;strokeColor=#6c8ebf" vertex="1" parent="1">
+          <mxGeometry x="80" y="100" width="280" height="430" as="geometry" />
+        </mxCell>
+        <mxCell id="dim_user_h" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;fontStyle=1" vertex="1" parent="dim_user">
+          <mxGeometry y="30" width="280" height="0" as="geometry" />
+        </mxCell>
+        <mxCell id="du_pk" value="🔑 user_key (BIGINT, PK)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontStyle=4;fontSize=11" vertex="1" parent="dim_user">
+          <mxGeometry y="30" width="280" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="du_bk" value="user_cd (INT, business key)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_user">
+          <mxGeometry y="52" width="280" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="du_un" value="username, first_name, last_name, full_name" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_user">
+          <mxGeometry y="74" width="280" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="du_em" value="email" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_user">
+          <mxGeometry y="96" width="280" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="du_dem" value="year_of_birth, gender, level_of_education" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_user">
+          <mxGeometry y="118" width="280" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="du_employ" value="employment_situation, language" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_user">
+          <mxGeometry y="140" width="280" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="du_loc" value="phone_number, city, country, location" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_user">
+          <mxGeometry y="162" width="280" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="du_fl" value="is_staff, is_superuser, is_active" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_user">
+          <mxGeometry y="184" width="280" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="du_dt" value="date_joined, last_login" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_user">
+          <mxGeometry y="206" width="280" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="du_hs" value="user_hash (xxhash64)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_user">
+          <mxGeometry y="228" width="280" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="du_scd1" value="key_start_date (TIMESTAMP)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#fff2cc;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontStyle=2;fontSize=11" vertex="1" parent="dim_user">
+          <mxGeometry y="250" width="280" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="du_scd2" value="key_end_date  (9999-12-31 = ativo)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#fff2cc;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontStyle=2;fontSize=11" vertex="1" parent="dim_user">
+          <mxGeometry y="272" width="280" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="du_au" value="last_update_timestamp" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_user">
+          <mxGeometry y="294" width="280" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="dim_org" value="dim_organization&#10;(SCD2)" style="shape=table;startSize=30;container=1;collapsible=0;childLayout=tableLayout;fontSize=12;fontStyle=1;fillColor=#d5e8d4;strokeColor=#82b366" vertex="1" parent="1">
+          <mxGeometry x="80" y="600" width="280" height="240" as="geometry" />
+        </mxCell>
+        <mxCell id="dim_org_h" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;fontStyle=1" vertex="1" parent="dim_org">
+          <mxGeometry y="30" width="280" height="0" as="geometry" />
+        </mxCell>
+        <mxCell id="do_pk" value="🔑 org_key (BIGINT, PK)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontStyle=4;fontSize=11" vertex="1" parent="dim_org">
+          <mxGeometry y="30" width="280" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="do_bk" value="org_cd (INT, business key)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_org">
+          <mxGeometry y="52" width="280" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="do_n" value="name, short_name, description" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_org">
+          <mxGeometry y="74" width="280" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="do_a" value="is_active" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_org">
+          <mxGeometry y="96" width="280" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="do_reg" value="registration_date" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_org">
+          <mxGeometry y="118" width="280" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="do_scd1" value="key_start_date" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#fff2cc;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontStyle=2;fontSize=11" vertex="1" parent="dim_org">
+          <mxGeometry y="140" width="280" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="do_scd2" value="key_end_date  (NULL = ativo)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#fff2cc;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontStyle=2;fontSize=11" vertex="1" parent="dim_org">
+          <mxGeometry y="162" width="280" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="do_au" value="last_update_timestamp" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_org">
+          <mxGeometry y="184" width="280" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="dim_ce" value="dim_course_edition&#10;(SCD2)" style="shape=table;startSize=30;container=1;collapsible=0;childLayout=tableLayout;fontSize=12;fontStyle=1;fillColor=#fff2cc;strokeColor=#d6b656" vertex="1" parent="1">
+          <mxGeometry x="1180" y="100" width="320" height="430" as="geometry" />
+        </mxCell>
+        <mxCell id="dce_h" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;fontStyle=1" vertex="1" parent="dim_ce">
+          <mxGeometry y="30" width="320" height="0" as="geometry" />
+        </mxCell>
+        <mxCell id="dce_pk" value="🔑 course_edition_key (STRING, PK)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontStyle=4;fontSize=11" vertex="1" parent="dim_ce">
+          <mxGeometry y="30" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="dce_bk" value="course_edition_cd (STRING, business key)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_ce">
+          <mxGeometry y="52" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="dce_ed" value="edition (RUN)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_ce">
+          <mxGeometry y="74" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="dce_fk" value="🔗 org_key (FK → dim_organization)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#ffe6cc;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_ce">
+          <mxGeometry y="96" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="dce_dn" value="display_name, display_number, short_description" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_ce">
+          <mxGeometry y="118" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="dce_dt" value="start_date, end_date, advertised_start" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_ce">
+          <mxGeometry y="140" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="dce_en" value="enrollment_start, enrollment_end" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_ce">
+          <mxGeometry y="162" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="dce_meta" value="version, language, effort, catalog_visibility" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_ce">
+          <mxGeometry y="184" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="dce_grade" value="lowest_passing_grade, max_student_enrollments_allowed" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_ce">
+          <mxGeometry y="206" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="dce_fl" value="self_paced, mobile_available, invitation_only, ..." style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_ce">
+          <mxGeometry y="228" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="dce_cert" value="certificates_display_behavior, certificate_available_date" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_ce">
+          <mxGeometry y="250" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="dce_scd1" value="key_start_date" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#fff2cc;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontStyle=2;fontSize=11" vertex="1" parent="dim_ce">
+          <mxGeometry y="272" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="dce_scd2" value="key_end_date  (NULL = ativo)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#fff2cc;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontStyle=2;fontSize=11" vertex="1" parent="dim_ce">
+          <mxGeometry y="294" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="dce_au" value="last_update_timestamp" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_ce">
+          <mxGeometry y="316" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="dim_time" value="dim_time&#10;(estática 1900–2100)" style="shape=table;startSize=30;container=1;collapsible=0;childLayout=tableLayout;fontSize=12;fontStyle=1;fillColor=#e1d5e7;strokeColor=#9673a6" vertex="1" parent="1">
+          <mxGeometry x="1180" y="600" width="320" height="240" as="geometry" />
+        </mxCell>
+        <mxCell id="dt_h" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;fontStyle=1" vertex="1" parent="dim_time">
+          <mxGeometry y="30" width="320" height="0" as="geometry" />
+        </mxCell>
+        <mxCell id="dt_pk" value="🔑 time_key (INT yyyyMMdd, PK)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontStyle=4;fontSize=11" vertex="1" parent="dim_time">
+          <mxGeometry y="30" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="dt_dt" value="date (DATE)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_time">
+          <mxGeometry y="52" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="dt_y" value="year, quarter, quarter_name" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_time">
+          <mxGeometry y="74" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="dt_m" value="month, month_name, month_short" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_time">
+          <mxGeometry y="96" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="dt_d" value="day, day_name, iso_day_of_week" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_time">
+          <mxGeometry y="118" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="dt_w" value="iso_week_number, week_of_year, is_weekend" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_time">
+          <mxGeometry y="140" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="dt_b" value="is_month_start/end, is_quarter_start/end" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_time">
+          <mxGeometry y="162" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="dt_h2" value="holiday_name, is_holiday" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="dim_time">
+          <mxGeometry y="184" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="fact_ce" value="fact_course_enrollment_daily&#10;(grão diário, partição days(day_key))" style="shape=table;startSize=30;container=1;collapsible=0;childLayout=tableLayout;fontSize=12;fontStyle=1;fillColor=#f8cecc;strokeColor=#b85450" vertex="1" parent="1">
+          <mxGeometry x="560" y="100" width="320" height="280" as="geometry" />
+        </mxCell>
+        <mxCell id="fce_h" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;fontStyle=1" vertex="1" parent="fact_ce">
+          <mxGeometry y="30" width="320" height="0" as="geometry" />
+        </mxCell>
+        <mxCell id="fce_dk" value="🔑 day_key (DATE) — grão" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontStyle=4;fontSize=11" vertex="1" parent="fact_ce">
+          <mxGeometry y="30" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="fce_ce" value="🔑 course_enrollment_cd (STRING)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontStyle=4;fontSize=11" vertex="1" parent="fact_ce">
+          <mxGeometry y="52" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="fce_fkc" value="🔗 course_edition_key" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#ffe6cc;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="fact_ce">
+          <mxGeometry y="74" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="fce_fku" value="🔗 user_key" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#ffe6cc;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="fact_ce">
+          <mxGeometry y="96" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="fce_fko" value="🔗 org_key" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#ffe6cc;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="fact_ce">
+          <mxGeometry y="118" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="fce_st" value="course_enrollment_start_date" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="fact_ce">
+          <mxGeometry y="140" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="fce_ie" value="is_enrolled (BOOLEAN)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="fact_ce">
+          <mxGeometry y="162" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="fce_un" value="unenrollment_date" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="fact_ce">
+          <mxGeometry y="184" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="fce_au" value="last_update_timestamp" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="fact_ce">
+          <mxGeometry y="206" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="fact_cert" value="fact_certificate_daily&#10;(grão por dia de emissão)" style="shape=table;startSize=30;container=1;collapsible=0;childLayout=tableLayout;fontSize=12;fontStyle=1;fillColor=#f8cecc;strokeColor=#b85450" vertex="1" parent="1">
+          <mxGeometry x="560" y="430" width="320" height="220" as="geometry" />
+        </mxCell>
+        <mxCell id="fcd_h" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;fontStyle=1" vertex="1" parent="fact_cert">
+          <mxGeometry y="30" width="320" height="0" as="geometry" />
+        </mxCell>
+        <mxCell id="fcd_dk" value="🔑 day_key (DATE)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontStyle=4;fontSize=11" vertex="1" parent="fact_cert">
+          <mxGeometry y="30" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="fcd_cc" value="🔑 certificate_cd" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontStyle=4;fontSize=11" vertex="1" parent="fact_cert">
+          <mxGeometry y="52" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="fcd_fkc" value="🔗 course_edition_key" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#ffe6cc;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="fact_cert">
+          <mxGeometry y="74" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="fcd_fku" value="🔗 user_key" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#ffe6cc;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="fact_cert">
+          <mxGeometry y="96" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="fcd_fko" value="🔗 org_key" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#ffe6cc;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="fact_cert">
+          <mxGeometry y="118" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="fcd_st" value="status (downloadable / notpassing / ...)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="fact_cert">
+          <mxGeometry y="140" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="fcd_iss" value="certificate_issue_date" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="fact_cert">
+          <mxGeometry y="162" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="fact_sg" value="fact_student_grades&#10;(grão por enrollment do aluno)" style="shape=table;startSize=30;container=1;collapsible=0;childLayout=tableLayout;fontSize=12;fontStyle=1;fillColor=#f8cecc;strokeColor=#b85450" vertex="1" parent="1">
+          <mxGeometry x="560" y="700" width="320" height="200" as="geometry" />
+        </mxCell>
+        <mxCell id="fsg_h" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;fontStyle=1" vertex="1" parent="fact_sg">
+          <mxGeometry y="30" width="320" height="0" as="geometry" />
+        </mxCell>
+        <mxCell id="fsg_pk" value="🔑 student_grade_key (BIGINT)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontStyle=4;fontSize=11" vertex="1" parent="fact_sg">
+          <mxGeometry y="30" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="fsg_fku" value="🔗 user_key" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#ffe6cc;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="fact_sg">
+          <mxGeometry y="52" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="fsg_fkc" value="🔗 course_edition_key" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#ffe6cc;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="fact_sg">
+          <mxGeometry y="74" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="fsg_pg" value="percent_grade, letter_grade" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="fact_sg">
+          <mxGeometry y="96" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="fsg_pt" value="passed_timestamp" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="fact_sg">
+          <mxGeometry y="118" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="fsg_dt" value="created, modified, last_update_timestamp" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="fact_sg">
+          <mxGeometry y="140" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="fact_ced" value="fact_course_edition_daily&#10;(grão (day_key, course_edition_key))" style="shape=table;startSize=30;container=1;collapsible=0;childLayout=tableLayout;fontSize=12;fontStyle=1;fillColor=#f8cecc;strokeColor=#b85450" vertex="1" parent="1">
+          <mxGeometry x="560" y="940" width="320" height="160" as="geometry" />
+        </mxCell>
+        <mxCell id="fced_h" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;fontStyle=1" vertex="1" parent="fact_ced">
+          <mxGeometry y="30" width="320" height="0" as="geometry" />
+        </mxCell>
+        <mxCell id="fced_dk" value="🔑 day_key (DATE)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontStyle=4;fontSize=11" vertex="1" parent="fact_ced">
+          <mxGeometry y="30" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="fced_fkc" value="🔗 course_edition_key" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#ffe6cc;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="fact_ced">
+          <mxGeometry y="52" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="fced_fko" value="🔗 org_key" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#ffe6cc;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="fact_ced">
+          <mxGeometry y="74" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="fced_cd" value="course_edition_cd, course_cd, edition" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="fact_ced">
+          <mxGeometry y="96" width="320" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="r1" style="endArrow=ERmany;html=1;rounded=0;exitX=1;exitY=0.3;exitDx=0;exitDy=0;startArrow=ERone;startSize=14;endSize=14" edge="1" parent="1" source="dim_user" target="fact_ce">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="r2" style="endArrow=ERmany;html=1;rounded=0;startArrow=ERone;startSize=14;endSize=14" edge="1" parent="1" source="dim_org" target="fact_ce">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="r3" style="endArrow=ERmany;html=1;rounded=0;startArrow=ERone;startSize=14;endSize=14" edge="1" parent="1" source="dim_ce" target="fact_ce">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="r4" style="endArrow=ERmany;html=1;rounded=0;startArrow=ERone;startSize=14;endSize=14" edge="1" parent="1" source="dim_user" target="fact_cert">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="r5" style="endArrow=ERmany;html=1;rounded=0;startArrow=ERone;startSize=14;endSize=14" edge="1" parent="1" source="dim_org" target="fact_cert">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="r6" style="endArrow=ERmany;html=1;rounded=0;startArrow=ERone;startSize=14;endSize=14" edge="1" parent="1" source="dim_ce" target="fact_cert">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="r7" style="endArrow=ERmany;html=1;rounded=0;startArrow=ERone;startSize=14;endSize=14" edge="1" parent="1" source="dim_user" target="fact_sg">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="r8" style="endArrow=ERmany;html=1;rounded=0;startArrow=ERone;startSize=14;endSize=14" edge="1" parent="1" source="dim_ce" target="fact_sg">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="r9" style="endArrow=ERmany;html=1;rounded=0;startArrow=ERone;startSize=14;endSize=14" edge="1" parent="1" source="dim_org" target="fact_ced">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="r10" style="endArrow=ERmany;html=1;rounded=0;startArrow=ERone;startSize=14;endSize=14" edge="1" parent="1" source="dim_ce" target="fact_ced">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="r11" style="endArrow=ERmany;html=1;rounded=0;startArrow=ERone;startSize=14;endSize=14;dashed=1" edge="1" parent="1" source="dim_org" target="dim_ce">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="legend" value="Legenda&#10;━━ FK 1:N (entre dimensão e facto)&#10;┄┄ Relação intra-dimensão (FK org_key em dim_course_edition)&#10;Linhas amarelas = colunas SCD2&#10;Linhas laranja = chaves estrangeiras (FK)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#999999;fontSize=10;align=left;verticalAlign=top;spacingLeft=8" vertex="1" parent="1">
+          <mxGeometry x="80" y="900" width="380" height="100" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
