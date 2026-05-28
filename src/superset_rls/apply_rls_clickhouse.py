@@ -1,18 +1,21 @@
 """
-Apply entity-level Row-Level Security rules to Trino datasets in NAU Superset.
+Apply entity-level Row-Level Security rules to ClickHouse datasets in NAU Superset.
 
-One "Base" RLS rule per dataset, excluding the Admin role (Base filters apply
-to everyone EXCEPT the listed roles). The clause filters on the dataset's
-`org_short_name` (VARCHAR) against `dim_course_access_role.org_cd` (also VARCHAR)
-for the logged-in user, resolved at query time via `{{ current_username() }}`.
-Group key `entity_access` so rules in the same family OR together.
+Sibling of apply_rls.py (which handles Trino datasets).
+
+ClickHouse cannot join the Trino permissions table, so the clause is a single
+Jinja macro call — `{{ user_accessible_courses_ck(...) }}`. The macro (registered
+via JINJA_CONTEXT_ADDONS in the Superset config, managed in the k8s manifests
+repo) looks up the current user's permissions in Trino's dim_course_access_role
+and emits an inline IN-list clause. One "Base" rule per dataset, excluding Admin.
+Group key `entity_access` (same family as Trino — they OR together).
 
 Idempotent: rules are matched by the single dataset they target and updated in
-place (including renaming). Rules targeting MULTIPLE datasets are flagged but
-never modified. The legacy/broken `audit_rls_*` rules (which compared the
-INTEGER `org_cd` column → Trino type error) are removed at the end.
+place (including renaming, e.g. a leftover rls_test_* rule). Rules targeting
+MULTIPLE datasets are flagged but never modified.
 
-ClickHouse datasets are handled by the sibling apply_rls_clickhouse.py.
+Prerequisite: the macro user_accessible_courses_ck must be registered in the
+Superset config (already deployed via the kubernetes-manifests repo).
 
 Required env vars:
     SUPERSET_PASSWORD       Password for the admin user (db provider).
@@ -20,141 +23,50 @@ Required env vars:
 Optional env vars:
     SUPERSET_URL            Default: https://analitica.nau.edu.pt
     SUPERSET_USERNAME       Default: admin
-    ACCESS_ROLE_TABLE       Fully-qualified access role table reachable by the
-                            Superset Trino engine. Default:
-                            gold_prod.audit.dim_course_access_role
     DRY_RUN                 'true' to print the plan without applying.
 """
 import os
 import sys
+import json
 import logging
 from typing import Optional
 
 import requests
 
-SUPERSET_URL      = os.environ.get("SUPERSET_URL", "https://analitica.nau.edu.pt").rstrip("/")
-USERNAME          = os.environ.get("SUPERSET_USERNAME", "admin")
-PASSWORD          = os.environ.get("SUPERSET_PASSWORD")
-ACCESS_ROLE_TABLE = os.environ.get("ACCESS_ROLE_TABLE", "gold_prod.audit.dim_course_access_role")
-DRY_RUN           = os.environ.get("DRY_RUN", "false").lower() == "true"
+SUPERSET_URL = os.environ.get("SUPERSET_URL", "https://analitica.nau.edu.pt").rstrip("/")
+USERNAME     = os.environ.get("SUPERSET_USERNAME", "admin")
+PASSWORD     = os.environ.get("SUPERSET_PASSWORD")
+DRY_RUN      = os.environ.get("DRY_RUN", "false").lower() == "true"
 
 GROUP_KEY        = "entity_access"
 RULE_NAME_PREFIX = "rls_entity_filter__"
-# Legacy bulk rules created by a previous version of this script — they compared
-# the dataset's INTEGER org_cd column against the VARCHAR access-table org_cd,
-# which Trino rejects (type mismatch). Removed once the per-dataset rules apply.
-LEGACY_RULE_PREFIX = "audit_rls"
 
 
 # =============================================================================
-# CLAUSE TEMPLATES
-# `{{ current_username() }}` must reach Superset un-rendered; these are plain
-# strings (no f-string / .format) so the braces survive. The access role table
-# is injected via the __ART__ placeholder.
-# =============================================================================
-
-_ART = "__ART__"
-
-CLAUSE_FULL_GRAIN = """\
-org_short_name IN (
-    SELECT dcar.org_cd
-    FROM __ART__ dcar
-    WHERE dcar.user_username = '{{ current_username() }}'
-      AND dcar.is_org_wide = true
-)
-OR
-(org_short_name, course_cd, edition) IN (
-    SELECT dcar.org_cd, dcar.course_cd, dcar.edition
-    FROM __ART__ dcar
-    WHERE dcar.user_username = '{{ current_username() }}'
-      AND dcar.is_org_wide = false
-      AND dcar.course_cd IS NOT NULL
-      AND dcar.edition IS NOT NULL
-)"""
-
-# For datasets with org_cd + course_cd but no edition column
-CLAUSE_NO_EDITION = """\
-org_short_name IN (
-    SELECT dcar.org_cd
-    FROM __ART__ dcar
-    WHERE dcar.user_username = '{{ current_username() }}'
-      AND dcar.is_org_wide = true
-)
-OR
-(org_short_name, course_cd) IN (
-    SELECT DISTINCT dcar.org_cd, dcar.course_cd
-    FROM __ART__ dcar
-    WHERE dcar.user_username = '{{ current_username() }}'
-      AND dcar.is_org_wide = false
-      AND dcar.course_cd IS NOT NULL
-)"""
-
-# For "Edições e Reedições" which uses `display_number` instead of `course_cd`
-CLAUSE_USING_DISPLAY_NUMBER = """\
-org_short_name IN (
-    SELECT dcar.org_cd
-    FROM __ART__ dcar
-    WHERE dcar.user_username = '{{ current_username() }}'
-      AND dcar.is_org_wide = true
-)
-OR
-(org_short_name, display_number, edition) IN (
-    SELECT dcar.org_cd, dcar.course_cd, dcar.edition
-    FROM __ART__ dcar
-    WHERE dcar.user_username = '{{ current_username() }}'
-      AND dcar.is_org_wide = false
-      AND dcar.course_cd IS NOT NULL
-      AND dcar.edition IS NOT NULL
-)"""
-
-# For datasets exposing only org granularity
-# Note: no `is_org_wide = true` filter — a user sees an org if they have ANY access there
-CLAUSE_ORG_ONLY = """\
-org_short_name IN (
-    SELECT DISTINCT dcar.org_cd
-    FROM __ART__ dcar
-    WHERE dcar.user_username = '{{ current_username() }}'
-)"""
-
-
-def _clause(template: str) -> str:
-    return template.replace(_ART, ACCESS_ROLE_TABLE)
-
-
-# =============================================================================
-# DATASET CATALOGUE (Trino)
-# (dataset_name, clause_template)
-# Datasets without entity columns (Downtimes, Jira_Tickets, Utilizadores OpenEdx*)
-# are intentionally absent.
+# DATASET CATALOGUE — 13 ClickHouse datasets
+# (dataset_name, clause). All clauses are one-line Jinja macro calls; the macro
+# itself lives in the Superset config and does the Trino lookup + caching.
 # =============================================================================
 
 DATASETS = [
-    # ---- Full grain (org_short_name, course_cd, edition present)
-    ("Cursos/Edições",                          CLAUSE_FULL_GRAIN),
-    ("Cursos",                                  CLAUSE_FULL_GRAIN),
-    ("Certificados por Inscritos (para média)", CLAUSE_FULL_GRAIN),
-    ("Certificates",                            CLAUSE_FULL_GRAIN),
-    ("Enrollment Flow",                         CLAUSE_FULL_GRAIN),
-    ("Formandos Inscritos",                     CLAUSE_FULL_GRAIN),
-    ("Inscrições vs Certificados",              CLAUSE_FULL_GRAIN),
-    ("Student_performance",                     CLAUSE_FULL_GRAIN),
-    ("Taxa Conclusão Actual",                   CLAUSE_FULL_GRAIN),
-    ("Taxa Conclusão (desagregada)",            CLAUSE_FULL_GRAIN),
-    ("Taxa Conclusão (agg)",                    CLAUSE_FULL_GRAIN),
-    ("Tickets vs Cursos",                       CLAUSE_FULL_GRAIN),
+    # ---- Full grain — datasets that expose course_cd + edition
+    ("Dropout",                                    "{{ user_accessible_courses_ck() }}"),
+    ("Atividades Clickhouse",                      "{{ user_accessible_courses_ck() }}"),
+    ("% utilizadores com visualização dos vídeos", "{{ user_accessible_courses_ck() }}"),
 
-    # ---- Course-level (no edition column)
-    ("Cursos (estado consolidado)",             CLAUSE_NO_EDITION),
+    # ---- Full grain — datasets that expose `curso` instead of course_cd
+    ("Frequência Média Login",            '{{ user_accessible_courses_ck(course_col="curso") }}'),
+    ("Interação nos Fóruns",              '{{ user_accessible_courses_ck(course_col="curso") }}'),
+    ("Média último Dia Entrada no Curso", '{{ user_accessible_courses_ck(course_col="curso") }}'),
+    ("Número Sessões para Conclusão",     '{{ user_accessible_courses_ck(course_col="curso") }}'),
+    ("Quizzes",                           '{{ user_accessible_courses_ck(course_col="curso") }}'),
+    ("Sessões Clickhouse",                '{{ user_accessible_courses_ck(course_col="curso") }}'),
+    ("Sessões Clickhouse (Concluídos)",   '{{ user_accessible_courses_ck(course_col="curso") }}'),
+    ("% de interações por fórum",         '{{ user_accessible_courses_ck(course_col="curso") }}'),
 
-    # ---- Edition-level using display_number as course code
-    ("Edições e Reedições",                     CLAUSE_USING_DISPLAY_NUMBER),
-
-    # ---- Org-level only (no course_cd column; slightly over-permissive
-    #      for course-specific users — see doc section 7)
-    ("Total Formandos (ativos no período)",     CLAUSE_ORG_ONLY),
-    ("Total de Formandos",                      CLAUSE_ORG_ONLY),
-    ("Evolução de Entidades Ativas",            CLAUSE_ORG_ONLY),
-    ("Organizações/Entidades",                  CLAUSE_ORG_ONLY),
+    # ---- Org-only fallback — datasets without course/edition columns
+    ("Nota Média Global",           '{{ user_accessible_courses_ck(mode="org_only") }}'),
+    ("Nota Média Global por Bloco", '{{ user_accessible_courses_ck(mode="org_only") }}'),
 ]
 
 
@@ -196,7 +108,6 @@ class SupersetAPI:
         return results[0]["id"]
 
     def get_dataset_id(self, name: str) -> Optional[int]:
-        import json
         r = self.session.get(
             f"{self.base_url}/api/v1/dataset/",
             params={"q": json.dumps({
@@ -209,7 +120,6 @@ class SupersetAPI:
         return results[0]["id"] if results else None
 
     def list_rls_rules(self) -> dict:
-        import json
         rules, page = {}, 0
         while True:
             r = self.session.get(
@@ -240,13 +150,6 @@ class SupersetAPI:
             raise RuntimeError(f"Update failed ({r.status_code}): {r.text}")
         return r.json()
 
-    def delete_rls(self, rule_id):
-        r = self.session.delete(
-            f"{self.base_url}/api/v1/rowlevelsecurity/{rule_id}", timeout=30)
-        if r.status_code >= 400:
-            raise RuntimeError(f"Delete failed ({r.status_code}): {r.text}")
-        return r.json()
-
 
 # =============================================================================
 # HELPERS
@@ -255,7 +158,7 @@ class SupersetAPI:
 def slugify(name: str) -> str:
     out = name.lower()
     for ch_from, ch_to in [
-        ("/", "_"), (" ", "_"), ("(", ""), (")", ""),
+        ("/", "_"), (" ", "_"), ("(", ""), (")", ""), ("%", "pct"),
         ("ç", "c"), ("ã", "a"), ("õ", "o"),
         ("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u"),
         ("ê", "e"), ("ô", "o"), ("â", "a"),
@@ -306,11 +209,10 @@ def main() -> None:
     if not PASSWORD:
         sys.exit("ABORT: set SUPERSET_PASSWORD env var")
 
-    banner = f"TARGET: {SUPERSET_URL}  [Trino RLS]" + ("  [DRY RUN]" if DRY_RUN else "")
+    banner = f"TARGET: {SUPERSET_URL}  [ClickHouse RLS]" + ("  [DRY RUN]" if DRY_RUN else "")
     print("\n" + "=" * (len(banner) + 4))
     print(f"= {banner} =")
-    print("=" * (len(banner) + 4))
-    print(f"Access role table: {ACCESS_ROLE_TABLE}\n")
+    print("=" * (len(banner) + 4) + "\n")
 
     api = SupersetAPI(SUPERSET_URL, USERNAME, PASSWORD)
     log.info("Logging in to %s ...", SUPERSET_URL)
@@ -328,10 +230,9 @@ def main() -> None:
         for t in rule.get("tables", []):
             rules_by_dataset.setdefault(t["id"], []).append(rule)
 
-    summary = {"create": [], "update": [], "skip": [], "missing": [],
-               "deleted": [], "duplicates_warning": []}
+    summary = {"create": [], "update": [], "skip": [], "missing": [], "duplicates_warning": []}
 
-    for ds_name, template in DATASETS:
+    for ds_name, clause in DATASETS:
         target_rule_name = RULE_NAME_PREFIX + slugify(ds_name)
         log.info("--- Dataset: %s", ds_name)
 
@@ -353,10 +254,10 @@ def main() -> None:
             "name": target_rule_name,
             "filter_type": "Base",
             "group_key": GROUP_KEY,
-            "clause": _clause(template).strip(),
+            "clause": clause.strip(),
             "tables": [ds_id],
             "roles": [admin_id],
-            "description": f"Entity-based RLS for {ds_name}. Auto-generated by apply_rls.py.",
+            "description": f"Entity-based RLS for ClickHouse dataset {ds_name}. Auto-generated.",
         }
 
         if not single_target:
@@ -383,15 +284,6 @@ def main() -> None:
                 log.info("  [OK] Rule '%s' (id=%d) already up-to-date", current["name"], current["id"])
                 summary["skip"].append(current["name"])
 
-    # ---- Cleanup: remove legacy/broken audit_rls_* rules ----
-    log.info("--- Cleanup: legacy '%s*' rules", LEGACY_RULE_PREFIX)
-    for rule in existing.values():
-        if (rule.get("name") or "").startswith(LEGACY_RULE_PREFIX):
-            log.info("  [DELETE] legacy rule '%s' (id=%d)", rule["name"], rule["id"])
-            if not DRY_RUN:
-                api.delete_rls(rule["id"])
-            summary["deleted"].append(rule["name"])
-
     # ---- Summary ----
     print()
     print("=" * 70)
@@ -404,9 +296,6 @@ def main() -> None:
     for n, _id, diffs in summary["update"]:
         print(f"    ~ {n} (id={_id})  {','.join(diffs)}")
     print(f"  Unchanged:  {len(summary['skip'])}")
-    print(f"  Deleted:    {len(summary['deleted'])}")
-    for n in summary["deleted"]:
-        print(f"    x {n}")
     print(f"  Missing:    {len(summary['missing'])}")
     for n in summary["missing"]:
         print(f"    [WARN] {n}")
