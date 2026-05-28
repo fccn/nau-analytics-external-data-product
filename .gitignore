@@ -6,4 +6,4 @@ utils/.
 .claude/settings.local.json
 src/gold/__pycache__/
 docs/build_adf.py
-src/superset_rls/__pycache__/apply_rls_clickhouse.cpython-311.pyc
+src/superset_rls/__pycache__/*
