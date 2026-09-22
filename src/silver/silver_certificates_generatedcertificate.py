@@ -37,6 +37,7 @@ def main():
     CREATE TABLE IF NOT EXISTS {tgt_layer}.{tgt_pipeline}.{tgt_table_name} (
         id INT NOT NULL,
         course_id STRING NOT NULL,
+        verify_uuid STRING NOT NULL,
         grade STRING NOT NULL,
         key STRING NOT NULL,
         distinction BOOLEAN NOT NULL,
@@ -50,10 +51,31 @@ def main():
     ) USING ICEBERG
     """)
 
+    # ---------------------------------------------------------
+    # Schema evolution: the CREATE TABLE IF NOT EXISTS above only
+    # covers a first run. verify_uuid was added after this table
+    # already existed in prod/stage/dev with data, so ALTER TABLE
+    # here (guarded, since ADD COLUMNS has no IF NOT EXISTS) is
+    # what actually applies to those. Iceberg does not allow adding
+    # a required (NOT NULL) column to a table that already has rows,
+    # so it's added as nullable here even though the fresh-install
+    # CREATE TABLE above declares it NOT NULL; bronze already
+    # guarantees non-null values for every row going forward.
+    # ---------------------------------------------------------
+    existing_columns = {f.name for f in spark.table(f"{tgt_layer}.{tgt_pipeline}.{tgt_table_name}").schema.fields}
+    if "verify_uuid" not in existing_columns:
+        spark.sql(f"""
+            ALTER TABLE {tgt_layer}.{tgt_pipeline}.{tgt_table_name}
+            ADD COLUMNS (
+                verify_uuid STRING
+            )
+        """)
+
     #Load source dataframe
     df_src_data = spark.sql(f"""
         SELECT  id,
                 course_id,
+                verify_uuid,
                 grade,
                 key,
                 distinction,

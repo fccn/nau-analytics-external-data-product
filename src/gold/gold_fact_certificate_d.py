@@ -42,6 +42,7 @@ def main():
 
             -- Natural key
             certificate_cd                   STRING      COMMENT 'Certificate identifier (source: certificates_generatedcertificate.id)',
+            verify_uuid                      STRING      COMMENT 'Public certificate verification UUID (source: certificates_generatedcertificate.verify_uuid). Combined with the LMS base URL (CERTIFICATES_HTML_VIEW), yields the public certificate URL: https://lms.nau.edu.pt/certificates/<verify_uuid>',
 
             -- FKs
             course_edition_key               STRING      COMMENT 'FK → dim_course_edition.course_edition_key',
@@ -50,6 +51,7 @@ def main():
 
             -- Certificate metadata
             status                           STRING      COMMENT 'Certificate status (downloadable, notpassing, audit_passing, unverified, etc.)',
+            mode                             STRING      COMMENT 'Certificate mode (honor, verified, audit, etc.)',
             course_enrollment_start_date     TIMESTAMP   COMMENT 'Enrollment open date for the edition (or start_date)',
             certificate_issue_date           TIMESTAMP   COMMENT 'Date/time the certificate was issued',
 
@@ -79,6 +81,29 @@ def main():
     DIM_USER_TBL = f"{tgt_layer}.entidades.dim_user"
     DIM_ORG_TBL  = f"{tgt_layer}.entidades.dim_organization"
     DIM_CE_TBL   = f"{tgt_layer}.entidades.dim_course_edition"
+
+    # ---------------------------------------------------------
+    # Schema evolution: CREATE TABLE IF NOT EXISTS above only
+    # covers a first run. verify_uuid/mode were added after this
+    # table already existed in prod/stage/dev, and Iceberg's
+    # ADD COLUMNS has no IF NOT EXISTS, so guard it explicitly
+    # to keep this script idempotent across DAG runs.
+    # ---------------------------------------------------------
+    existing_columns = {f.name for f in spark.table(TGT_TBL_DLY).schema.fields}
+    if "verify_uuid" not in existing_columns:
+        spark.sql(f"""
+            ALTER TABLE {TGT_TBL_DLY}
+            ADD COLUMNS (
+                verify_uuid STRING COMMENT 'Public certificate verification UUID (source: certificates_generatedcertificate.verify_uuid). Combined with the LMS base URL (CERTIFICATES_HTML_VIEW), yields the public certificate URL: https://lms.nau.edu.pt/certificates/<verify_uuid>'
+            )
+        """)
+    if "mode" not in existing_columns:
+        spark.sql(f"""
+            ALTER TABLE {TGT_TBL_DLY}
+            ADD COLUMNS (
+                mode STRING COMMENT 'Certificate mode (honor, verified, audit, etc.)'
+            )
+        """)
 
     END_INF = F.lit("9999-12-31 00:00:00").cast("timestamp")
 
@@ -172,7 +197,9 @@ def main():
         with_user
         .select(
             col("y.id").cast("string").alias("certificate_cd"),
+            col("y.verify_uuid").alias("verify_uuid"),
             col("y.status").alias("status"),
+            col("y.mode").alias("mode"),
             col("y.course_edition_key").alias("course_edition_key"),
             col("y.user_key").alias("user_key"),
             col("y.org_key").alias("org_key"),
@@ -191,7 +218,7 @@ def main():
         fact_point
         .withColumn("day_key", F.to_date("certificate_issue_date"))
         .select(
-            "day_key", "certificate_cd", "status", "course_edition_key",
+            "day_key", "certificate_cd", "verify_uuid", "status", "mode", "course_edition_key",
             "user_key", "org_key", "course_enrollment_start_date",
             "certificate_issue_date", "last_update_timestamp"
         )
@@ -220,7 +247,9 @@ def main():
           AND t.day_key        = s.day_key
 
         WHEN MATCHED THEN UPDATE SET
+            t.verify_uuid                    = s.verify_uuid,
             t.status                         = s.status,
+            t.mode                           = s.mode,
             t.course_edition_key             = s.course_edition_key,
             t.user_key                       = s.user_key,
             t.org_key                        = s.org_key,
@@ -229,10 +258,10 @@ def main():
             t.last_update_timestamp          = s.last_update_timestamp
 
         WHEN NOT MATCHED THEN INSERT (
-            day_key, certificate_cd, status, course_edition_key, user_key, org_key,
+            day_key, certificate_cd, verify_uuid, status, mode, course_edition_key, user_key, org_key,
             course_enrollment_start_date, certificate_issue_date, last_update_timestamp
         ) VALUES (
-            s.day_key, s.certificate_cd, s.status, s.course_edition_key, s.user_key, s.org_key,
+            s.day_key, s.certificate_cd, s.verify_uuid, s.status, s.mode, s.course_edition_key, s.user_key, s.org_key,
             s.course_enrollment_start_date, s.certificate_issue_date, s.last_update_timestamp
         )
     """)
