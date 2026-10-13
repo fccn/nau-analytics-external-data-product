@@ -6,7 +6,10 @@ from pyspark.sql.window import Window
 from nau_analytics_data_product_utils_lib import start_iceberg_session,get_required_env #type: ignore
 from utils.gold_utils_functions import update_ctrl_table,get_max_timestamp_for_table
 from utils.column_spec import build_conditional_columns
-from utils.certificate_column_specs import FACT_DAILY_COLS_SPEC, UPDATE_SET_PARTS_SPEC, INSERT_COLS_SPEC
+from utils.certificate_column_specs import (
+    FACT_DAILY_COLS_SPEC, UPDATE_SET_PARTS_SPEC, INSERT_COLS_SPEC,
+    STATUS_COMMENT, VERIFY_UUID_COMMENT, MODE_COMMENT, COLUMN_MIGRATIONS,
+)
 import logging
 import os
 
@@ -16,16 +19,6 @@ logging.basicConfig(
     handlers=[
         logging.StreamHandler()
     ]
-)
-
-# Shared between the CREATE TABLE (fresh install) and the guarded ALTER
-# TABLE (existing tables) below -- a single source of truth so a future
-# wording tweak doesn't need to be made in two places.
-VERIFY_UUID_COMMENT = (
-    "Public certificate verification UUID (source: "
-    "certificates_generatedcertificate.verify_uuid). Combined with the "
-    "LMS base URL (CERTIFICATES_HTML_VIEW), yields the public certificate "
-    "URL: https://lms.nau.edu.pt/certificates/<verify_uuid>"
 )
 
 def main():
@@ -75,8 +68,8 @@ def main():
             org_key                          BIGINT      COMMENT 'FK → dim_organization.org_key',
 
             -- Certificate metadata
-            status                           STRING      COMMENT 'Certificate status (downloadable, notpassing, audit_passing, unverified, etc.)',
-            mode                             STRING      COMMENT 'Certificate mode (honor, verified, audit, etc.)',
+            status                           STRING      COMMENT '{STATUS_COMMENT}',
+            mode                             STRING      COMMENT '{MODE_COMMENT}',
             course_enrollment_start_date     TIMESTAMP   COMMENT 'Enrollment open date for the edition (or start_date)',
             certificate_issue_date           TIMESTAMP   COMMENT 'Date/time the certificate was issued',
 
@@ -108,32 +101,27 @@ def main():
     DIM_CE_TBL   = f"{tgt_layer}.entidades.dim_course_edition"
 
     # ---------------------------------------------------------
-    # Schema evolution: CREATE TABLE IF NOT EXISTS above only
-    # covers a first run. verify_uuid/mode were added after this
-    # table already existed in prod/stage/dev, and Iceberg's
-    # ADD COLUMNS has no IF NOT EXISTS, so guard it explicitly
-    # to keep this script idempotent across DAG runs.
-    #
-    # Gated by VERIFY_UUID_MODE_ENABLED (see flag comment above) --
-    # while disabled, this table is never altered and behaves exactly
-    # as it did before fccn/nau-technical#981.
+    # Schema evolution: CREATE TABLE IF NOT EXISTS above only covers a
+    # fresh install. Columns added to that DDL after a real table
+    # already existed need a guarded ALTER TABLE too (Iceberg's ADD
+    # COLUMNS has no IF NOT EXISTS). See COLUMN_MIGRATIONS/BASE_COLUMNS
+    # (utils/certificate_column_specs.py) -- enforced by
+    # tests/test_schema_migration_coverage.py, so a future column added
+    # to the DDL without an entry here fails CI instead of silently
+    # breaking the MERGE on any table that predates it.
     # ---------------------------------------------------------
-    if VERIFY_UUID_MODE_ENABLED:
-        existing_columns = {field.name for field in spark.table(TGT_TBL_DLY).schema.fields}
-        if "verify_uuid" not in existing_columns:
+    existing_columns = {field.name for field in spark.table(TGT_TBL_DLY).schema.fields}
+    for migration_name, migration_sql_type, migration_comment, migration_gated_by_flag in COLUMN_MIGRATIONS:
+        if migration_gated_by_flag and not VERIFY_UUID_MODE_ENABLED:
+            continue
+        if migration_name not in existing_columns:
             spark.sql(f"""
                 ALTER TABLE {TGT_TBL_DLY}
                 ADD COLUMNS (
-                    verify_uuid STRING COMMENT '{VERIFY_UUID_COMMENT}'
+                    {migration_name} {migration_sql_type} COMMENT '{migration_comment}'
                 )
             """)
-        if "mode" not in existing_columns:
-            spark.sql(f"""
-                ALTER TABLE {TGT_TBL_DLY}
-                ADD COLUMNS (
-                    mode STRING COMMENT 'Certificate mode (honor, verified, audit, etc.)'
-                )
-            """)
+            existing_columns.add(migration_name)
 
     END_INF = F.lit("9999-12-31 00:00:00").cast("timestamp")
 
