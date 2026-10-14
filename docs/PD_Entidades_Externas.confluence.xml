@@ -1,0 +1,624 @@
+<!--
+================================================================================
+  PD - Entidades Externas — Confluence Storage Format
+  Para usar:
+    1. Abrir a página https://glinttdev.atlassian.net/wiki/spaces/FIDDP/pages/2080632274947
+    2. Editar a página, clicar nos "..." → "View source" (ou Ctrl+Shift+S)
+    3. Colar o conteúdo entre <ROOT_START> e <ROOT_END> (sem essas tags)
+    4. Anexar à página os 3 ficheiros .drawio (docs/diagrams/*.drawio)
+    5. Em cada drawio macro abaixo, ajustar o atributo "diagramName" caso o
+       nome do anexo seja diferente.
+  Macros usadas:
+    - drawio (app drawio.com)            — embedding dos diagramas
+    - toc (built-in)                      — índice automático
+    - code (built-in)                     — blocos de código
+    - status / panel / info / note       — destaques
+================================================================================
+-->
+<!-- ROOT_START -->
+
+<ac:structured-macro ac:name="info">
+  <ac:rich-text-body>
+    <p><strong>Repositório:</strong> <a href="https://github.com/fccn/nau-analytics-external-data-product">nau-analytics-external-data-product</a> · <strong>Branch documentada:</strong> <code>feature/ingestion-script-improvements</code> · <strong>Plataforma:</strong> PySpark + Apache Iceberg + S3 + Spark on Kubernetes (orquestrado por Airflow num repositório separado).</p>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<h2>Índice</h2>
+<ac:structured-macro ac:name="toc">
+  <ac:parameter ac:name="maxLevel">3</ac:parameter>
+  <ac:parameter ac:name="minLevel">2</ac:parameter>
+</ac:structured-macro>
+
+<h2>1. Visão Geral</h2>
+<p>Este repositório contém todo o código (PySpark + SQL embebido) que constrói o <strong>data product das Entidades Externas</strong> da plataforma NAU. O produto serve análises de:</p>
+<ul>
+  <li><strong>Inscrições</strong> em cursos por entidade/curso/edição;</li>
+  <li><strong>Conclusões e certificados</strong> emitidos;</li>
+  <li><strong>Notas finais dos formandos</strong>;</li>
+  <li><strong>Atividade diária</strong> das edições de curso e KPIs de fluxo (inscrições novas, desistências, alunos ativos).</li>
+</ul>
+<p>Os dashboards finais são consumidos em <strong>Apache Superset</strong> sobre as tabelas agregadas <code>gold&lt;env&gt;.entidades.*_agg</code>.</p>
+
+<ac:structured-macro ac:name="note">
+  <ac:rich-text-body>
+    <p>Os DAGs de orquestração Airflow vivem num <strong>repositório separado</strong> (gestão do cluster Kubernetes) — este repositório contém apenas as transformações de dados e a imagem Docker que as executa.</p>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<h2>2. Arquitetura Medallion</h2>
+<p>A pipeline segue o padrão <strong>Bronze / Silver / Gold</strong> (Medallion) sobre <strong>Apache Iceberg</strong>, com object store S3-compatible para os ficheiros Parquet e catálogo Iceberg em MySQL.</p>
+
+<h3>2.1 Diagrama de arquitetura</h3>
+<ac:structured-macro ac:name="drawio">
+  <ac:parameter ac:name="diagramName">01_medallion_architecture</ac:parameter>
+  <ac:parameter ac:name="lbox">1</ac:parameter>
+  <ac:parameter ac:name="diagramDisplayName">Arquitetura Medallion — NAU External Entities</ac:parameter>
+  <ac:parameter ac:name="zoom">1</ac:parameter>
+  <ac:parameter ac:name="border">true</ac:parameter>
+</ac:structured-macro>
+
+<h3>2.2 Camadas</h3>
+<table>
+  <colgroup><col/><col/><col/></colgroup>
+  <thead>
+    <tr><th>Camada</th><th>Catálogo Iceberg</th><th>Função</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Source</td><td>MySQL <code>edxapp</code> (Open edX LMS)</td><td>Sistema operacional de origem</td></tr>
+    <tr><td>Bronze</td><td><code>bronze&lt;env&gt;.entidades</code></td><td>Snapshot histórico raw + metadata</td></tr>
+    <tr><td>Silver</td><td><code>silver&lt;env&gt;.entidades</code></td><td>Limpeza, tipagem, extração JSON, deduplicação leve</td></tr>
+    <tr><td>Gold</td><td><code>gold&lt;env&gt;.entidades</code></td><td>Modelo dimensional (Star Schema) com SCD2</td></tr>
+    <tr><td>Gold reporting</td><td><code>gold&lt;env&gt;.entidades.*_agg</code></td><td>Tabelas agregadas pré-calculadas para Superset</td></tr>
+  </tbody>
+</table>
+<p><code>&lt;env&gt;</code> é o sufixo do ambiente (ex.: <code>_dev</code>, <code>_prod</code>, <code>_local</code>) — definido pela variável <code>ENVIRONMENT</code>.</p>
+
+<h3>2.3 Sistema de origem (Open edX, schema <code>edxapp</code>)</h3>
+<table>
+  <thead><tr><th>Tabela MySQL</th><th>Domínio</th></tr></thead>
+  <tbody>
+    <tr><td><code>auth_user</code></td><td>Identidade/autenticação</td></tr>
+    <tr><td><code>auth_userprofile</code></td><td>Perfil demográfico (campos JSON em <code>meta</code>)</td></tr>
+    <tr><td><code>certificates_generatedcertificate</code></td><td>Certificados emitidos</td></tr>
+    <tr><td><code>course_overviews_courseoverview</code></td><td>Definição da edição do curso</td></tr>
+    <tr><td><code>grades_persistentcoursegrade</code></td><td>Notas finais persistentes</td></tr>
+    <tr><td><code>organizations_organization</code></td><td>Entidades/organizações ativas</td></tr>
+    <tr><td><code>organizations_historicalorganization</code></td><td>Histórico SCD (Django Simple History)</td></tr>
+    <tr><td><code>student_courseaccessrole</code></td><td>Papéis de acesso a cursos</td></tr>
+    <tr><td><code>student_courseenrollment</code></td><td>Inscrições atuais</td></tr>
+    <tr><td><code>student_courseenrollment_history</code></td><td>Histórico de inscrições/cancelamentos</td></tr>
+    <tr><td><code>student_userattribute</code></td><td>Atributos chave/valor por utilizador</td></tr>
+  </tbody>
+</table>
+
+<h2>3. Estrutura do Repositório</h2>
+<ac:structured-macro ac:name="code">
+  <ac:parameter ac:name="language">none</ac:parameter>
+  <ac:plain-text-body><![CDATA[
+root/
+├── .github/
+│   └── workflows/
+│       └── docker-build-push.yml         # CI/CD: build & push da imagem Docker
+├── Docker/
+│   └── Dockerfile                        # Imagem PySpark com nau-analytics-utils
+├── readme.md
+└── src/
+    ├── bronze/
+    │   └── python/
+    │       ├── bronze_*_ingestion.py     # 11 scripts de ingestão
+    │       ├── misc/
+    │       │   ├── get_full_tables.py    # Carga inicial completa (one-shot)
+    │       │   ├── incremental_load.py   # Loader genérico legacy
+    │       │   └── hello_spark.py        # Smoke test do cluster
+    │       └── utils/
+    │           └── bronze_utils_functions.py
+    ├── silver/
+    │   ├── silver_*.py                   # 9 scripts (1 por tabela bronze)
+    │   └── utils/
+    │       └── silver_utils_functions.py
+    └── gold/
+        ├── gold_dim_*.py                 # 4 dimensões
+        ├── gold_fact_*.py                # 4 factos
+        ├── gold_reporting_agg_tables.py  # 6 datasets agregados (Superset)
+        └── utils/
+            └── gold_utils_functions.py
+  ]]></ac:plain-text-body>
+</ac:structured-macro>
+
+<h2>4. Convenções e Padrões Transversais</h2>
+<h3>4.1 Nomenclatura</h3>
+<ul>
+  <li><strong>Tabelas bronze e silver</strong> mantêm o nome da tabela de origem MySQL.</li>
+  <li><strong>Tabelas gold</strong> seguem o prefixo <code>dim_*</code> ou <code>fact_*</code>; agregadas para BI usam o sufixo <code>_agg</code>.</li>
+  <li><strong>Surrogate keys SCD2</strong> com sufixo <code>_key</code> (ex.: <code>user_key</code>, <code>org_key</code>, <code>course_edition_key</code>).</li>
+  <li><strong>Business keys</strong> com sufixo <code>_cd</code> (ex.: <code>user_cd</code>, <code>org_cd</code>, <code>course_edition_cd</code>).</li>
+  <li><strong>Pipeline</strong> — todas as tabelas vivem dentro do schema lógico <code>entidades</code>.</li>
+</ul>
+
+<h3>4.2 Tabela de auditoria — <code>pipeline_run_ctrl</code></h3>
+<p>Existe uma tabela de auditoria por camada:</p>
+<ul>
+  <li><code>bronze&lt;env&gt;.audit.pipeline_run_ctrl</code></li>
+  <li><code>silver&lt;env&gt;.audit.pipeline_run_ctrl</code></li>
+  <li><code>gold&lt;env&gt;.audit.pipeline_run_ctrl</code></li>
+</ul>
+<p>Cada execução faz <code>INSERT</code> com <code>(pipeline, table_name, last_execution_ts, number_of_records)</code>. Esta tabela serve de <strong>marca de água (high-water mark)</strong> para o próximo run incremental: <code>get_max_timestamp_for_table()</code> lê o <code>MAX(last_execution_ts)</code> filtrado por <code>(pipeline='entidades', table_name=&lt;x&gt;)</code>. Se nunca foi executado, o default é <code>1900-01-01 00:00:00</code> — despoleta backfill completo.</p>
+
+<h3>4.3 Helpers (utils)</h3>
+<table>
+  <thead>
+    <tr><th>Função</th><th>Camada</th><th>Descrição</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>add_ingestion_metadata_column(df, table, ts)</code></td><td>bronze</td><td>Adiciona <code>ingestion_date</code> e <code>source_name</code></td></tr>
+    <tr><td><code>read_data_from_sql(spark, query, jdbc_url, user, secret)</code></td><td>bronze</td><td>Leitura JDBC genérica do MySQL</td></tr>
+    <tr><td><code>update_ctrl_table(spark, table_name, ts, n, env)</code></td><td>todas</td><td>Insere linha de auditoria</td></tr>
+    <tr><td><code>get_max_timestamp_for_table(spark, table_name, env)</code></td><td>todas</td><td>Devolve a última marca de água da tabela</td></tr>
+    <tr><td><code>get_delta_dataframe(tgt, src)</code></td><td>bronze</td><td>Junta src ↔ tgt e devolve linhas novas/alteradas via <code>row_hash</code></td></tr>
+    <tr><td><code>validate_table_that_delete_lines(tgt, src)</code></td><td>bronze</td><td>Alerta sobre <code>id</code> em src ausente em tgt (atualmente só avisa)</td></tr>
+    <tr><td><code>validate_ingestion_values(spark, src_df, table_name, env)</code></td><td>bronze</td><td>Conta <code>id</code> distintos na target após o append</td></tr>
+  </tbody>
+</table>
+
+<h2>5. Camada Bronze — Ingestão</h2>
+<ac:structured-macro ac:name="drawio">
+  <ac:parameter ac:name="diagramName">03_bronze_ingestion_patterns</ac:parameter>
+  <ac:parameter ac:name="lbox">1</ac:parameter>
+  <ac:parameter ac:name="diagramDisplayName">Padrões de Ingestão Bronze</ac:parameter>
+  <ac:parameter ac:name="zoom">1</ac:parameter>
+  <ac:parameter ac:name="border">true</ac:parameter>
+</ac:structured-macro>
+
+<p>A camada bronze materializa o <strong>estado bruto</strong> das tabelas de origem do Open edX em formato Iceberg, preservando a auditabilidade (<code>ingestion_date</code>, <code>source_name</code>).</p>
+
+<h3>5.1 Padrão A — CDC por hash (delta dataframe)</h3>
+<p>Usado em tabelas <strong>sem campos <code>created</code>/<code>modified</code> fiáveis</strong>. Captura INSERT + UPDATE evitando reprocessar linhas inalteradas.</p>
+<p><strong>Tabelas:</strong> <code>auth_user</code>, <code>auth_userprofile</code>, <code>student_courseaccessrole</code>, <code>student_courseenrollment</code>.</p>
+<ac:structured-macro ac:name="code">
+  <ac:parameter ac:name="language">sql</ac:parameter>
+  <ac:parameter ac:name="title">Hash calculado na fonte (MySQL)</ac:parameter>
+  <ac:plain-text-body><![CDATA[
+SELECT id, col1, col2, ...,
+       SHA1(CONCAT_WS('||', col1, col2, ...)) AS row_hash
+FROM <src_table>
+  ]]></ac:plain-text-body>
+</ac:structured-macro>
+<ac:structured-macro ac:name="code">
+  <ac:parameter ac:name="language">python</ac:parameter>
+  <ac:parameter ac:name="title">Junção delta no Spark</ac:parameter>
+  <ac:plain-text-body><![CDATA[
+w = Window.partitionBy("id").orderBy(F.col("ingestion_date").desc())
+tgt_dedup = (
+    tgt.withColumn("rn", F.row_number().over(w))
+       .filter("rn = 1")
+       .drop("rn")
+)
+
+df_delta = (
+    src.alias("s")
+       .join(tgt_dedup.alias("t"), F.col("s.id") == F.col("t.id"), "left")
+       .where((F.col("t.id").isNull()) | (F.col("s.row_hash") != F.col("t.row_hash")))
+       .select("s.*")
+)
+df_delta.write.format("iceberg").mode("append").saveAsTable(...)
+  ]]></ac:plain-text-body>
+</ac:structured-macro>
+
+<ac:structured-macro ac:name="info">
+  <ac:rich-text-body>
+    <ul>
+      <li><strong>Captura</strong>: INSERT + UPDATE</li>
+      <li><strong>Não captura</strong>: DELETE (apenas alerta via <code>validate_table_that_delete_lines</code>)</li>
+      <li><strong>Vantagem</strong>: independente de timestamps na fonte; fiável a UPDATE de qualquer coluna</li>
+      <li><strong>Custo</strong>: leitura completa da target a cada run (mitigado via dedup window)</li>
+    </ul>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<h3>5.2 Padrão B — Janela incremental por <code>created</code>/<code>modified</code></h3>
+<p>Usado em tabelas com timestamps fiáveis. A query JDBC já é filtrada na origem.</p>
+<p><strong>Tabelas:</strong> <code>certificates_generatedcertificate</code>, <code>course_overviews_courseoverview</code>, <code>grades_persistentcoursegrade</code>, <code>organizations_organization</code>, <code>student_userattribute</code>, <code>student_courseenrollment_history</code>.</p>
+<ac:structured-macro ac:name="code">
+  <ac:parameter ac:name="language">python</ac:parameter>
+  <ac:plain-text-body><![CDATA[
+start_date = get_max_timestamp_for_table(spark, table, env)  # ou '1900-01-01' se 1ª run
+
+query = f"""(
+    SELECT * FROM {src_table}
+    WHERE created  >= '{start_date}'
+       OR modified >= '{start_date}'
+) AS T1"""
+  ]]></ac:plain-text-body>
+</ac:structured-macro>
+<p>A target é particionada por <code>days(ingestion_date)</code>.</p>
+
+<h3>5.3 Padrão C — Snapshot único (one-shot)</h3>
+<p>Usado <strong>exclusivamente</strong> para <code>organizations_historicalorganization</code>. Verifica se é a primeira execução (<code>start_date == '1900-01-01'</code>) — se não for, sai imediatamente. Alimenta o histórico SCD2 inicial de <code>dim_organization</code>.</p>
+
+<h3>5.4 Lista de tabelas bronze</h3>
+<table>
+  <thead><tr><th>Script</th><th>Target</th><th>Padrão</th><th>Particionamento</th><th>Hash</th></tr></thead>
+  <tbody>
+    <tr><td><code>bronze_auth_user_ingestion.py</code></td><td><code>auth_user</code></td><td>A</td><td>—</td><td>✓</td></tr>
+    <tr><td><code>bronze_auth_userprofile_ingestion.py</code></td><td><code>auth_userprofile</code></td><td>A</td><td>—</td><td>✓</td></tr>
+    <tr><td><code>bronze_certificates_generatedcertificate_ingestion.py</code></td><td><code>certificates_generatedcertificate</code></td><td>B</td><td><code>days(ingestion_date)</code></td><td>—</td></tr>
+    <tr><td><code>bronze_course_overviews_courseoverview_ingestion.py</code></td><td><code>course_overviews_courseoverview</code></td><td>B</td><td><code>days(ingestion_date)</code></td><td>—</td></tr>
+    <tr><td><code>bronze_grades_persistentcoursegrade_ingestion.py</code></td><td><code>grades_persistentcoursegrade</code></td><td>B</td><td><code>days(ingestion_date)</code></td><td>—</td></tr>
+    <tr><td><code>bronze_organizations_ho_ingestion.py</code></td><td><code>organizations_historicalorganization</code></td><td>C</td><td>—</td><td>—</td></tr>
+    <tr><td><code>bronze_organizations_organization_ingestion.py</code></td><td><code>organizations_organization</code></td><td>B</td><td><code>days(ingestion_date)</code></td><td>—</td></tr>
+    <tr><td><code>bronze_student_courseaccessrole_ingestion.py</code></td><td><code>student_courseaccessrole</code></td><td>A</td><td><code>days(ingestion_date)</code></td><td>✓</td></tr>
+    <tr><td><code>bronze_student_courseenrollment_ingestion.py</code></td><td><code>student_courseenrollment</code></td><td>A</td><td><code>days(ingestion_date)</code></td><td>✓</td></tr>
+    <tr><td><code>bronze_student_courseenrollment_history_ingestion.py</code></td><td><code>student_courseenrollment_history</code></td><td>B</td><td>—</td><td>—</td></tr>
+    <tr><td><code>bronze_student_userattribute_ingestion.py</code></td><td><code>student_userattribute</code></td><td>B</td><td>—</td><td>—</td></tr>
+  </tbody>
+</table>
+
+<h3>5.5 Scripts auxiliares (<code>misc/</code>)</h3>
+<ul>
+  <li><strong><code>get_full_tables.py</code></strong> — utilitário CLI para carga inicial completa de todas as tabelas (com <code>--undesired_column</code> para drop opcional na <code>auth_user</code>, ex.: <code>password</code>).</li>
+  <li><strong><code>incremental_load.py</code></strong> — loader genérico legado; metadata em CSV no S3, suporta <code>full_initial_ingestion</code> (loop mensal desde 2020) ou <code>delta_load</code>. <strong>Não está integrado</strong> no fluxo regular.</li>
+  <li><strong><code>hello_spark.py</code></strong> — smoke test do cluster Spark on Kubernetes.</li>
+</ul>
+
+<h2>6. Camada Silver — Limpeza e Tipagem</h2>
+<p>A camada silver é uma <strong>projeção tipada e limpa</strong> do bronze. Cada script segue o mesmo padrão minimalista:</p>
+<ac:structured-macro ac:name="code">
+  <ac:parameter ac:name="language">python</ac:parameter>
+  <ac:plain-text-body><![CDATA[
+last_execution_timestamp = get_max_timestamp_for_table(spark, tgt_table, env)
+
+df_src = spark.sql(f"""
+    SELECT <colunas com cast/limpeza>
+    FROM bronze<env>.entidades.<table>
+    WHERE ingestion_date > '{last_execution_timestamp}'
+""")
+
+df_src.write.format("iceberg").mode("append").saveAsTable(f"silver<env>.entidades.<table>")
+update_ctrl_table(...)
+  ]]></ac:plain-text-body>
+</ac:structured-macro>
+
+<h3>6.1 Transformações relevantes por tabela silver</h3>
+<table>
+  <thead><tr><th>Tabela silver</th><th>Transformação</th></tr></thead>
+  <tbody>
+    <tr><td><code>auth_user</code></td><td>Recalcula <code>row_hash</code> em Spark (consistência), copia colunas</td></tr>
+    <tr><td><code>auth_userprofile</code></td><td><strong>Extrai <code>employment_situation</code> de <code>meta</code> (JSON)</strong> via <code>get_json_object(meta, '$.employment_situation')</code>; descarta <code>courseware</code>, <code>mailing_address</code>, <code>goals</code>, <code>bio</code>, <code>profile_image_uploaded_at</code></td></tr>
+    <tr><td><code>certificates_generatedcertificate</code></td><td>Limpa <code>verify_uuid</code>, <code>download_uuid</code>, <code>download_url</code>, <code>key</code>, <code>name</code></td></tr>
+    <tr><td><code>course_overviews_courseoverview</code></td><td><code>start = GREATEST(start, '2015-01-01')</code> — proteção contra datas inválidas; remove URLs (imagem, social, marketing)</td></tr>
+    <tr><td><code>grades_persistentcoursegrade</code></td><td>Cópia tipada</td></tr>
+    <tr><td><code>organizations_organization</code></td><td>Cópia tipada (sem <code>logo</code>)</td></tr>
+    <tr><td><code>organizations_historicalorganization</code></td><td><strong>Carga única</strong> — só executa se <code>last_execution_ts == '1900-01-01'</code></td></tr>
+    <tr><td><code>student_courseenrollment</code></td><td><strong>Full load</strong> (sem filtro) — registos são deletados na fonte ao desinscrever (passam para history)</td></tr>
+    <tr><td><code>student_courseenrollment_history</code></td><td>Filtro por <code>ingestion_date &gt; last_exec</code></td></tr>
+  </tbody>
+</table>
+
+<h3>6.2 Pontos chave</h3>
+<ul>
+  <li>Marca de água própria — silver tem a sua <code>silver&lt;env&gt;.audit.pipeline_run_ctrl</code> separada da bronze.</li>
+  <li><strong>Sem deduplicação SCD</strong> — silver pode conter múltiplas versões da mesma chave; é gold que aplica SCD2.</li>
+  <li>Particionamento removido — volumes mais pequenos após o filtro de janela.</li>
+</ul>
+
+<h2>7. Camada Gold — Modelo Dimensional</h2>
+<ac:structured-macro ac:name="drawio">
+  <ac:parameter ac:name="diagramName">02_gold_layer_erd</ac:parameter>
+  <ac:parameter ac:name="lbox">1</ac:parameter>
+  <ac:parameter ac:name="diagramDisplayName">Gold Layer ERD — Star Schema</ac:parameter>
+  <ac:parameter ac:name="zoom">1</ac:parameter>
+  <ac:parameter ac:name="border">true</ac:parameter>
+</ac:structured-macro>
+
+<h3>7.1 Mapa de tabelas gold</h3>
+<table>
+  <thead><tr><th>Tabela</th><th>Tipo</th><th>Grão</th><th>SCD</th><th>Particionamento</th></tr></thead>
+  <tbody>
+    <tr><td><code>dim_user</code></td><td>Dimensão</td><td>utilizador</td><td>SCD2 (<code>9999-12-31</code> = ativo)</td><td>—</td></tr>
+    <tr><td><code>dim_organization</code></td><td>Dimensão</td><td>entidade</td><td>SCD2 (<code>NULL</code> = ativo)</td><td>—</td></tr>
+    <tr><td><code>dim_course_edition</code></td><td>Dimensão</td><td>edição de curso</td><td>SCD2 (<code>NULL</code> = ativo)</td><td>—</td></tr>
+    <tr><td><code>dim_time</code></td><td>Dimensão</td><td>dia (1900–2100)</td><td>Estática (overwrite)</td><td>—</td></tr>
+    <tr><td><code>fact_certificate_daily</code></td><td>Facto</td><td>certificado × dia</td><td>—</td><td>—</td></tr>
+    <tr><td><code>fact_course_enrollment_daily</code></td><td>Facto</td><td>inscrição × dia</td><td>—</td><td><code>days(day_key)</code></td></tr>
+    <tr><td><code>fact_course_edition_daily</code></td><td>Facto</td><td>edição × dia ativo</td><td>—</td><td><code>day_key</code></td></tr>
+    <tr><td><code>fact_student_grades</code></td><td>Facto</td><td>nota final por aluno × edição</td><td>—</td><td>—</td></tr>
+  </tbody>
+</table>
+
+<h3>7.2 Dimensões</h3>
+
+<h4>7.2.1 <code>dim_time</code></h4>
+<p>Dimensão estática gerada por <code>sequence(to_date('1900-01-01'), to_date('2100-12-31'), interval 1 day)</code> e enriquecida com atributos calendário (ano, trimestre, mês, semana ISO, dia da semana, <em>flags</em> <code>is_weekend</code>/<code>is_month_start</code>/<code>is_quarter_end</code>) e feriados.</p>
+<p>Chave primária: <code>time_key INT</code> no formato <code>yyyyMMdd</code>.</p>
+
+<h4>7.2.2 <code>dim_organization</code> — SCD Type 2</h4>
+<ul>
+  <li><strong>Surrogate key:</strong> <code>org_key BIGINT = org_cd * 1000 + seq</code> (sequencial por entidade).</li>
+  <li><strong>Business key:</strong> <code>org_cd INT</code> (= <code>id</code> na fonte).</li>
+  <li><strong>Markers SCD2:</strong> <code>key_start_date</code>, <code>key_end_date</code> (<code>NULL</code> = versão ativa).</li>
+  <li><strong>Atributos versionados:</strong> <code>name</code>, <code>short_name</code>, <code>description</code>, <code>is_active</code>.</li>
+  <li>Atributos não versionados: <code>registration_date</code>.</li>
+</ul>
+<p>Lógica: comparação entre versão ativa e fonte por <code>compare_cols</code>; <code>MERGE INTO</code> fecha a antiga (<code>UPDATE key_end_date = modified - 1s</code>) e insere a nova (<code>key_start_date = modified + 1s</code>).</p>
+
+<h4>7.2.3 <code>dim_user</code> — SCD Type 2</h4>
+<p>Construída por <em>full outer join</em> de <code>silver.auth_user</code> com <code>silver.auth_userprofile</code>.</p>
+<ul>
+  <li><strong>Surrogate key:</strong> <code>user_key BIGINT = user_cd * 1000 + version</code>.</li>
+  <li><strong>Business key:</strong> <code>user_cd INT</code>.</li>
+  <li><strong>Marker de ativo:</strong> <code>key_end_date = '9999-12-31'</code>.</li>
+  <li><strong>Hash:</strong> <code>user_hash STRING = xxhash64</code> sobre os atributos versionados.</li>
+</ul>
+<p><strong>Tratamento de <code>last_login</code>:</strong> versionado como SCD1 (UPDATE in-place) — não dispara nova versão SCD2.</p>
+<p><strong>Otimização:</strong> <code>BROADCAST</code> da lista de <code>user_cd</code> alterados antes do scan da target — evita ler a <code>dim_user</code> inteira quando o delta é pequeno.</p>
+
+<h4>7.2.4 <code>dim_course_edition</code> — SCD Type 2</h4>
+<p>Constrói-se a partir de <code>silver.course_overviews_courseoverview</code> com <strong>lookup SCD2 a <code>dim_organization</code></strong>:</p>
+<ac:structured-macro ac:name="code">
+  <ac:parameter ac:name="language">sql</ac:parameter>
+  <ac:plain-text-body><![CDATA[
+JOIN dim_organization oo
+  ON  upper(co.org) = upper(oo.short_name)
+  AND co.event_ts BETWEEN oo.key_start_date
+                      AND coalesce(oo.key_end_date, '9999-12-31 23:59:59')
+  ]]></ac:plain-text-body>
+</ac:structured-macro>
+<ul>
+  <li><strong>Surrogate key:</strong> <code>course_edition_key STRING = '&lt;course_edition_cd&gt;_&lt;seq:003&gt;'</code>.</li>
+  <li><strong>Business key:</strong> <code>course_edition_cd STRING</code> (Open edX <code>id</code>).</li>
+  <li><code>edition</code>: extraído via regex <code>([^+]+)(?:\+ccx@.*)?$</code> (apanha o RUN e ignora sufixos CCX).</li>
+  <li><strong>FK SCD2:</strong> <code>org_key</code> ↔ <code>dim_organization</code>.</li>
+</ul>
+
+<h3>7.3 Factos</h3>
+
+<h4>7.3.1 <code>fact_course_enrollment_daily</code> — granularidade diária</h4>
+<ac:structured-macro ac:name="info">
+  <ac:rich-text-body>
+    <p>O facto principal do produto. Tem <strong>uma linha por (inscrição, dia)</strong> desde a inscrição até ao fim da edição (ou hoje, ou desinscrição), permitindo responder a <em>"quantos alunos estavam inscritos no dia X?"</em> sem SQL temporal complexo.</p>
+  </ac:rich-text-body>
+</ac:structured-macro>
+<ul>
+  <li><strong>Grão:</strong> <code>(course_enrollment_cd, day_key)</code></li>
+  <li><strong>Partição:</strong> <code>days(day_key)</code></li>
+  <li><strong>FKs SCD2-aware:</strong> <code>course_edition_key</code>, <code>user_key</code>, <code>org_key</code></li>
+  <li><strong>Métricas:</strong> <code>is_enrolled</code> (bool por dia), <code>unenrollment_date</code>, <code>course_enrollment_start_date</code></li>
+</ul>
+<p><strong>Construção (resumida):</strong></p>
+<ol>
+  <li>Lê delta de <code>silver.student_courseenrollment</code> e <code>silver.student_courseenrollment_history</code>.</li>
+  <li>Resolve dimensões com <em>between SCD2</em>.</li>
+  <li>Calcula <code>effective_start = GREATEST(course_enrollment_start_date, course_edition.start_date)</code> e <code>effective_end = LEAST(course_enrollment_end_date, course_edition.end_date, today)</code>.</li>
+  <li><strong>Garante <code>effective_end ≥ effective_start</code></strong> para não perder <em>late enrollments</em> (fix histórico no commit <code>5fc6f69</code>).</li>
+  <li>Explode com <code>sequence(effective_start, effective_end, interval 1 day)</code>.</li>
+  <li><strong>Dedup</strong> por <code>(course_enrollment_cd, day_key)</code> antes do <code>MERGE INTO</code> para evitar <code>MERGE_CARDINALITY_VIOLATION</code> quando há sobreposição de versões SCD2.</li>
+</ol>
+
+<h4>7.3.2 <code>fact_certificate_daily</code></h4>
+<ul>
+  <li><strong>Grão:</strong> <code>(certificate_cd, day_key)</code> com <code>day_key = DATE(certificate_issue_date)</code></li>
+  <li><strong>FKs SCD2-aware:</strong> <code>course_edition_key</code>, <code>user_key</code>, <code>org_key</code></li>
+  <li><strong>Status</strong> relevantes: <code>downloadable</code>, <code>notpassing</code>, <code>audit_passing</code>, <code>unverified</code>. Para conclusão considera-se <code>status = 'downloadable'</code>.</li>
+</ul>
+
+<h4>7.3.3 <code>fact_course_edition_daily</code></h4>
+<ul>
+  <li><strong>Grão:</strong> <code>(course_edition_key, day_key)</code> para todos os dias em que a edição esteve "ativa".</li>
+  <li><strong>Partição:</strong> <code>day_key</code> (sem <code>days()</code> — é o próprio <code>DATE</code>).</li>
+  <li><strong>Estratégia:</strong> <em>DELETE-then-append</em> — para cada <code>course_edition_key</code> afetado, apaga linhas antigas e regenera.</li>
+  <li>Faz join string-based contra <code>dim_time</code> (<code>yyyyMMdd</code>).</li>
+</ul>
+
+<h4>7.3.4 <code>fact_student_grades</code></h4>
+<ul>
+  <li><strong>Grão:</strong> <code>(student_grade_key)</code> = <code>grades_persistentcoursegrade.id</code> (1:1).</li>
+  <li><strong>FKs SCD2-aware (active row only):</strong> <code>user_key</code>, <code>course_edition_key</code>.</li>
+  <li><strong>MERGE condicional:</strong> <code>WHEN MATCHED AND src.modified &gt; tgt.modified THEN UPDATE</code>.</li>
+</ul>
+
+<h3>7.4 Padrões comuns das tabelas gold</h3>
+<table>
+  <thead><tr><th>Aspeto</th><th>Detalhe</th></tr></thead>
+  <tbody>
+    <tr><td>Storage</td><td>Iceberg + Parquet <code>zstd</code></td></tr>
+    <tr><td>Tamanho-alvo de ficheiro</td><td>128 MB (dim) / 512 MB (fact)</td></tr>
+    <tr><td><code>write.distribution-mode</code></td><td><code>none</code> (dim) / <code>hash</code> (fact em maior volume)</td></tr>
+    <tr><td><code>write.sort.order</code></td><td>Definido por tabela (ex.: <code>day_key ASC, course_edition_key ASC</code>)</td></tr>
+    <tr><td>Bloom filters</td><td>Em colunas de FK e filtro frequente</td></tr>
+    <tr><td>Manutenção</td><td><code>rewrite_data_files (sort)</code> + <code>rewrite_manifests</code> + <code>expire_snapshots(retain_last=5)</code></td></tr>
+  </tbody>
+</table>
+
+<h2>8. Camada Gold/Reporting — Agregadas para Superset</h2>
+<p>Ficheiro: <code>src/gold/gold_reporting_agg_tables.py</code>.</p>
+<p>Orquestra a construção de <strong>6 datasets agregados</strong> que servem diretamente os dashboards de Superset.</p>
+
+<h3>8.1 Datasets</h3>
+<table>
+  <thead><tr><th>Tabela</th><th>Estratégia</th><th>Grão</th><th>KPIs principais</th></tr></thead>
+  <tbody>
+    <tr><td><code>fact_conclusion_rate_agg</code></td><td>Full refresh</td><td><code>(course_cd, edition, org_cd)</code></td><td>Taxa de conclusão por curso/edição</td></tr>
+    <tr><td><code>tickets_vs_courses_agg</code></td><td>Incremental por <code>day_key</code></td><td><code>(day_key, course_cd, edition, org_cd)</code></td><td>Cruzamento com <code>jira_tickets</code></td></tr>
+    <tr><td><code>certificates_agg</code></td><td>Incremental por <code>day_key</code></td><td><code>(day_key, course_cd, edition, org_cd)</code></td><td>Volume diário de certificados</td></tr>
+    <tr><td><code>enrollments_vs_certificates_agg</code></td><td>Incremental por <code>day_key</code></td><td><code>(day_key, course_cd, edition, org_cd, status)</code></td><td>Total de dias até conclusão</td></tr>
+    <tr><td><code>enrollment_flow_agg</code></td><td>Incremental + pushdown</td><td><code>(day_key, course_cd, edition, org_cd)</code></td><td><code>new_enrollments</code>, <code>new_unenrollments</code>, <code>active_students</code></td></tr>
+    <tr><td><code>enrollment_users_agg</code></td><td>Full refresh</td><td><code>(org_cd, course_cd, edition, user_key)</code></td><td>Formandos únicos por edição</td></tr>
+  </tbody>
+</table>
+
+<h3>8.2 Estratégia de execução</h3>
+<ac:structured-macro ac:name="code">
+  <ac:parameter ac:name="language">python</ac:parameter>
+  <ac:plain-text-body><![CDATA[
+@dataclass
+class AggTable:
+    name: str
+    sql_fn: Callable
+    partition_by: str
+    sort_order: str
+    output_partitions: int = 50
+    full_refresh: bool = False
+    pushdown_day_filter: bool = False
+  ]]></ac:plain-text-body>
+</ac:structured-macro>
+
+<p>Pontos relevantes implementados:</p>
+<ul>
+  <li><strong>Caching das fact tables hot</strong> (<code>fact_course_enrollment_daily</code>, <code>fact_certificate_daily</code>) com <code>CACHE LAZY TABLE</code> — controlado por <code>CACHE_FACT_TABLES=true|false</code>.</li>
+  <li><strong>Repartition explícito</strong> antes do write — controla contagem de ficheiros em S3.</li>
+  <li><strong>Pre-aggregation por <em>chaves naturais</em></strong> (<code>course_cd</code>, <code>edition</code>, <code>org_cd</code>) — não SCD2 surrogates — para evitar duplicação quando há múltiplas versões SCD2.</li>
+  <li><strong>Eliminação de <code>COUNT(DISTINCT)</code> empilhados</strong> via <em>two-stage aggregation</em>.</li>
+  <li><strong>Concorrência configurável</strong> via <code>AGG_MAX_WORKERS</code> (default <code>1</code>).</li>
+  <li><strong>Filtragem opcional</strong> via <code>TABLES_TO_RUN="t1,t2"</code>.</li>
+  <li><strong>Manutenção Iceberg saltada na primeira run</strong> — ficheiros já dimensionados pelo <code>repartition()</code>.</li>
+</ul>
+
+<h3>8.3 Fluxo de incremental por partição</h3>
+<p>Para tabelas com <code>day_key</code>:</p>
+<ol>
+  <li><code>_changed_days</code> = união dos dias com <code>last_update_timestamp &gt; last_exec</code> em <code>fact_course_enrollment_daily ∪ fact_certificate_daily</code>.</li>
+  <li>SQL agregada com filtro <code>INNER JOIN _changed_days</code> (ou pushdown direto na fact em <code>enrollment_flow_agg</code>).</li>
+  <li><code>writeTo(...).overwritePartitions()</code> — apenas partições afetadas são reescritas.</li>
+</ol>
+<p>Para <code>full_refresh=True</code> (sem <code>day_key</code>): <code>TRUNCATE TABLE</code> + <code>append</code>.</p>
+
+<h2>9. Operação, Deploy e CI/CD</h2>
+<h3>9.1 Imagem Docker</h3>
+<ac:structured-macro ac:name="code">
+  <ac:parameter ac:name="language">dockerfile</ac:parameter>
+  <ac:plain-text-body><![CDATA[
+FROM nauedu/nau-analytics-base-spark:latest
+USER root
+RUN pip install --no-cache-dir git+https://github.com/fccn/nau-analytics-utils.git@main#subdirectory=common_libs/utils
+USER 185
+COPY src/ /opt/spark/work-dir/src/
+WORKDIR /opt/spark/work-dir
+USER 185
+  ]]></ac:plain-text-body>
+</ac:structured-macro>
+<p>UID <code>185</code> = utilizador <code>spark</code> na imagem base, requisito do Spark on Kubernetes Operator.</p>
+
+<h3>9.2 Pipeline GitHub Actions</h3>
+<p>Trigger: <strong>push em qualquer branch</strong> que altere <code>src/**</code> ou <code>Docker/**</code>.</p>
+<table>
+  <thead><tr><th>Branch</th><th>Tag pushada</th></tr></thead>
+  <tbody>
+    <tr><td><code>main</code></td><td><code>latest</code> + <code>&lt;sha:7&gt;</code></td></tr>
+    <tr><td>Outras</td><td><code>&lt;branch-name&gt;</code> (com <code>/</code> → <code>-</code>)</td></tr>
+  </tbody>
+</table>
+<p>PRs constroem mas <strong>não fazem push</strong>.</p>
+
+<h3>9.3 Sequência de execução típica</h3>
+<ac:structured-macro ac:name="code">
+  <ac:parameter ac:name="language">none</ac:parameter>
+  <ac:plain-text-body><![CDATA[
+Bronze ─┬─ auth_user                         ─┐
+        ├─ auth_userprofile                  ─┤
+        ├─ certificates_generatedcertificate ─┤
+        ├─ course_overviews_courseoverview   ─├──▶ Silver (1:1) ──▶ Gold ─┬─ dim_organization
+        ├─ grades_persistentcoursegrade      ─┤                            ├─ dim_user
+        ├─ organizations_organization        ─┤                            ├─ dim_course_edition (depende de dim_organization)
+        ├─ organizations_historicalorganization (one-shot)                 ├─ dim_time
+        ├─ student_courseaccessrole          ─┤                            │
+        ├─ student_courseenrollment          ─┤                            ├─ fact_course_edition_daily (depende das dim)
+        ├─ student_courseenrollment_history  ─┤                            ├─ fact_course_enrollment_daily
+        └─ student_userattribute             ─┘                            ├─ fact_certificate_daily
+                                                                           ├─ fact_student_grades
+                                                                           │
+                                                                           └─ gold_reporting_agg_tables
+                                                                                  ▼
+                                                                              Superset
+  ]]></ac:plain-text-body>
+</ac:structured-macro>
+
+<h2>10. Variáveis de Ambiente</h2>
+<h3>10.1 Obrigatórias</h3>
+<table>
+  <thead><tr><th>Variável</th><th>Camada</th><th>Descrição</th></tr></thead>
+  <tbody>
+    <tr><td><code>ENVIRONMENT</code></td><td>todas</td><td>Sufixo do catálogo: <code>_dev</code>, <code>_prod</code>, <code>_local</code></td></tr>
+    <tr><td><code>MYSQL_HOST</code></td><td>bronze</td><td>Host do MySQL Open edX</td></tr>
+    <tr><td><code>MYSQL_PORT</code></td><td>bronze</td><td>Porto do MySQL</td></tr>
+    <tr><td><code>MYSQL_DATABASE</code></td><td>bronze</td><td>DB MySQL (geralmente <code>edxapp</code>)</td></tr>
+    <tr><td><code>MYSQL_USER</code></td><td>bronze</td><td>User JDBC</td></tr>
+    <tr><td><code>MYSQL_SECRET</code></td><td>bronze</td><td>Password JDBC (idealmente via K8s secret)</td></tr>
+  </tbody>
+</table>
+
+<h3>10.2 Apenas em <code>misc/</code> (config Iceberg explícita)</h3>
+<table>
+  <thead><tr><th>Variável</th><th>Descrição</th></tr></thead>
+  <tbody>
+    <tr><td><code>S3_ACCESS_KEY</code> / <code>S3_SECRET_KEY</code> / <code>S3_ENDPOINT</code></td><td>Credenciais e URL S3</td></tr>
+    <tr><td><code>ICEBERG_CATALOG_HOST</code> / <code>_PORT</code> / <code>ICEBERG_DATABASE_CATALOG_NAME</code></td><td>MySQL backing do catálogo Iceberg</td></tr>
+    <tr><td><code>ICEBERG_CATALOG_USER</code> / <code>ICEBERG_CATALOG_PASSWORD</code></td><td>Credenciais (password é base64-decoded)</td></tr>
+    <tr><td><code>ICEBERG_CATALOG_WAREHOUSE</code></td><td>URI raiz do warehouse no S3</td></tr>
+    <tr><td><code>ICEBERG_CATALOG_NAME</code></td><td>Nome lógico do catálogo</td></tr>
+  </tbody>
+</table>
+
+<h3>10.3 Opcionais em <code>gold_reporting_agg_tables.py</code></h3>
+<table>
+  <thead><tr><th>Variável</th><th>Default</th><th>Efeito</th></tr></thead>
+  <tbody>
+    <tr><td><code>TABLES_TO_RUN</code></td><td><em>(todas)</em></td><td>Lista CSV de agregadas a executar</td></tr>
+    <tr><td><code>AGG_MAX_WORKERS</code></td><td><code>1</code></td><td>Concorrência de execução paralela das agregadas</td></tr>
+    <tr><td><code>CACHE_FACT_TABLES</code></td><td><code>true</code></td><td>Cacheia <code>fact_course_enrollment_daily</code> e <code>fact_certificate_daily</code></td></tr>
+  </tbody>
+</table>
+
+<h2>11. Observações e Pontos de Atenção</h2>
+<ac:structured-macro ac:name="warning">
+  <ac:rich-text-body>
+    <p>Esta secção lista observações relevantes detetadas durante a auditoria do código — úteis para evolução e onboarding de novos contribuidores.</p>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<h3>11.1 Inconsistência no marker de SCD2 ativo</h3>
+<ul>
+  <li><code>dim_user</code> → <code>key_end_date = '9999-12-31 00:00:00'</code> para versões ativas.</li>
+  <li><code>dim_organization</code> e <code>dim_course_edition</code> → <code>key_end_date IS NULL</code>.</li>
+</ul>
+<p>Propaga-se aos factos: <code>fact_certificate_daily</code> e <code>fact_course_enrollment_daily</code> usam <code>coalesce(dce.key_end_date, '9999-12-31')</code> no <code>BETWEEN</code>; <code>fact_student_grades</code> filtra explicitamente <code>key_end_date = '9999-12-31'</code> para <code>dim_user</code> e <code>key_end_date IS NULL</code> para <code>dim_course_edition</code>. Funciona, mas é inconsistência conceptual — recomenda-se alinhar.</p>
+
+<h3>11.2 <code>validate_table_that_delete_lines</code> é informativo</h3>
+<p>Apesar do nome, a função <strong>nunca aborta</strong> o pipeline (o <code>raise Exception(...)</code> está comentado e o <code>return True</code> é fixo). Caso seja crítico detetar DELETEs na fonte: reativar a exceção ou implementar tombstones (<code>is_deleted BOOLEAN</code>).</p>
+
+<h3>11.3 <code>validate_ingestion_values</code> com <code>raise</code> comentado</h3>
+<p>A comparação de contagens entre src e tgt está desativada por código comentado. Recomenda-se reativar (ou converter em alerta no log).</p>
+
+<h3>11.4 Hardcoded lookups SCD2 na <code>dim_course_edition</code></h3>
+<p>O join <code>upper(co.org) = upper(oo.short_name)</code> depende de <code>short_name</code> ser único e estável. Se uma entidade alterar <code>short_name</code>, a versão SCD2 antiga deixa de fazer <em>match</em> e a edição passa a ter <code>org_key = NULL</code>.</p>
+
+<h3>11.5 <code>dim_time</code> com feriados mínimos</h3>
+<p>Apenas <em>New Year</em> e <em>Christmas</em> em 1900. Recomenda-se popular dinamicamente (biblioteca <code>holidays-pt</code> ou tabela externa). <strong>Atualmente <code>is_holiday</code> será sempre <code>false</code> na prática.</strong></p>
+
+<h3>11.6 <code>incremental_load.py</code> em <code>misc/</code> é legacy</h3>
+<p>Padrão anterior (CSV de metadata em S3), não integrado no fluxo regular, duplica funções de <code>bronze_utils_functions.py</code>. Avaliar arquivamento.</p>
+
+<h3>11.7 Diretórios vazios e ficheiros gerados</h3>
+<ul>
+  <li><code>src/misc/</code> e <code>src/shared/</code> estão vazios.</li>
+  <li><code>src/gold/__pycache__/</code> está commitado — adicionar ao <code>.gitignore</code>.</li>
+</ul>
+
+<h2>Apêndice A — Glossário</h2>
+<table>
+  <thead><tr><th>Termo</th><th>Significado</th></tr></thead>
+  <tbody>
+    <tr><td>Open edX</td><td>Plataforma LMS open-source — sistema de origem</td></tr>
+    <tr><td>Iceberg</td><td>Formato de tabela transacional sobre Parquet — suporta MERGE, time travel, schema evolution</td></tr>
+    <tr><td>SCD2</td><td>Slowly Changing Dimension Type 2 — versionamento via <code>key_start_date</code>/<code>key_end_date</code></td></tr>
+    <tr><td>Medallion</td><td>Padrão Bronze/Silver/Gold para data lakes</td></tr>
+    <tr><td>CDC</td><td>Change Data Capture — implementado via hash de colunas</td></tr>
+    <tr><td>Surrogate key</td><td>Chave artificial (<code>_key</code>), distinta da natural (<code>_cd</code>)</td></tr>
+    <tr><td>NAU</td><td>Plataforma nacional de cursos online da FCCN</td></tr>
+    <tr><td>FCCN</td><td>Unidade da FCT que opera a infraestrutura</td></tr>
+  </tbody>
+</table>
+
+<hr/>
+<p><em>Documento gerado a partir do código atual (branch <code>feature/ingestion-script-improvements</code>). Master em Markdown disponível em <code>docs/PD_Entidades_Externas.md</code>; diagramas-fonte em <code>docs/diagrams/*.drawio</code>.</em></p>
+
+<!-- ROOT_END -->

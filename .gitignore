@@ -1,2 +1,8 @@
 .env
 .mypy_cache
+utils/.
+.claude/.
+*.pyc
+.claude/settings.local.json
+**/__pycache__/
+docs/build_adf.py
